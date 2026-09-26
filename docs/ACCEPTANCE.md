@@ -59,6 +59,14 @@ The later 100-job batch added six sourced descriptions and recorded 98 exclusion
 
 Normal unauthenticated Wuzzuf and Bayt search requests returned HTTP 403; Naukrigulf timed out. These sources were recorded and not bypassed. A normal browser inspection of a Bosta Lever QA application revealed custom required questions and hCaptcha integration; the role was unsuitable, no fields were filled and no CV was uploaded. Public feed availability does not prove form support. See `docs/JOB_SOURCES.md` and `docs/PLATFORMS.md`.
 
+## Verification after the first live receipt
+
+The complete local suite passed **266 tests** in 129.52 seconds, including actual OCR, LaTeX/PDF compilation and Chromium fixtures. The source snapshot is commit `35ed5a76896f72317d858809f50d22029681c612`; the tracked-secret audit passed for all 50 tracked files. Local and remote `main` matched and repository visibility was verified PRIVATE.
+
+A separate final-code assessment of all 100 jobs found no classification differences from the tracker: 98 exclusions, one required-information block and the one qualified/submitted job. Current canonical source evidence, master CV quality gates, the original submitted snapshot manifest, browser receipt hashes and exactly one submission event were rechecked. Private evidence: `data/verification-266-tests-first-live.json`.
+
+GitHub reported **success** for the same implementation commit in [CI run 36257389157](https://github.com/Ahmed-elssamman/Ahmed-ElSamman-CV-Automation/actions/runs/36257389157), exercising fresh Ubuntu/Python 3.12, OCR, Chromium, LaTeX and the tracked-secret audit. The receipt is independent of the local test result.
+
 ## Historical verification record — before the first live receipt
 
 GitHub CI passed on implementation commit `3dd96fa588f0a41a57b6ba6d17888c9627ecfaec`: **111 tests passed**, including actual PDF compilation and Chromium integration, plus the tracked-secret audit. [Verified workflow run](https://github.com/Ahmed-elssamman/Ahmed-ElSamman-CV-Automation/actions/runs/36253883443). `main` was pushed; local and remote heads matched; Git status was clean; repository visibility was PRIVATE. No fixture is counted as a real application.
