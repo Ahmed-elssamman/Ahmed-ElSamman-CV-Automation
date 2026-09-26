@@ -35,6 +35,7 @@ def normalize_question(question: str) -> str:
 _ALIASES = {
     "full_name": ["full name", "name", "your name", "candidate name", "what is your full name"],
     "first_name": ["first name", "given name"],
+    "middle_name": ["middle name", "middle names", "your middle name", "what is your middle name"],
     "last_name": ["last name", "family name", "surname"],
     "email": ["email", "email address", "your email", "your email address"],
     "phone": ["phone", "phone number", "mobile", "mobile number", "telephone number"],
@@ -60,12 +61,22 @@ _ALIASES = {
     "sponsorship": ["do you require visa sponsorship", "will you require sponsorship", "do you require sponsorship", "visa sponsorship"],
     "work_authorization": ["are you authorized to work", "are you legally authorized to work", "work authorization"],
     "expected_salary": ["expected salary", "desired salary", "salary expectation", "salary expectations", "what is your expected salary", "expected compensation"],
-    "current_salary": ["current salary", "what is your current salary", "salary history"],
+    "current_salary": ["current salary", "what is your current salary", "current compensation"],
     "years_experience": ["years of experience", "total years of experience", "how many years of experience do you have"],
     "summary": ["professional summary", "summary"],
+    "cover_message": ["cover letter", "application cover message", "application message"],
 }
 _ALIAS_LOOKUP = {normalize_question(alias): key for key, aliases in _ALIASES.items() for alias in aliases}
 _LEGAL = {"work_authorization", "sponsorship", "relocation"}
+_LANGUAGE_ALIASES = {
+    normalize_question(template.format(language=language)): language
+    for language in ("English", "Arabic", "French", "German", "Spanish", "Italian", "Portuguese",
+                     "Russian", "Turkish", "Hindi", "Urdu", "Mandarin", "Chinese", "Japanese", "Korean")
+    for template in ("{language} level", "{language} proficiency", "{language} language level",
+                     "{language} language proficiency", "level of {language}", "proficiency in {language}",
+                     "what is your {language} level", "what is your level of {language}",
+                     "how would you rate your {language}")
+}
 
 
 def _skill_key(skill: str) -> str:
@@ -90,6 +101,8 @@ def question_key(question: str) -> str:
     if skill := _question_skill(question):
         return "skill_years_experience:" + skill
     normalized = normalize_question(question)
+    if normalized in _LANGUAGE_ALIASES:
+        return "language_proficiency:" + _LANGUAGE_ALIASES[normalized].casefold()
     return _ALIAS_LOOKUP.get(normalized, normalized)
 
 
@@ -286,6 +299,88 @@ def _education_fact(profile: dict, question: str, key: str, context: dict) -> di
                   scope={"education_id": context["education_id"]} if context.get("education_id") else {})
 
 
+def _language_proficiency(profile: dict, question: str, language: str) -> dict:
+    matches = [(index, item) for index, item in enumerate(profile.get("languages", []))
+               if isinstance(item, dict) and str(item.get("name", "")).casefold() == language]
+    if len(matches) != 1:
+        return _unknown(question, "No single sourced proficiency record exists for this language")
+    index, item = matches[0]
+    value = item.get("proficiency")
+    if not isinstance(value, str) or not value.strip() or value.upper() == "UNKNOWN":
+        return _unknown(question, "The language is listed, but its proficiency is not stated")
+    pointer = f"/languages/{index}/proficiency"
+    level_pattern = rf"\b{re.escape(normalize_question(value))}\b"
+    evidence = [record for record in _usable_evidence(profile.get("evidence", {}).get(pointer)) + _usable_evidence(item.get("proficiency_evidence"))
+                if re.search(level_pattern, normalize_question(str(record.get("quote", ""))))]
+    # A source listing only 'English' does not establish 'Good' or any other level.
+    language_words, level_words = re.escape(normalize_question(item["name"])), re.escape(normalize_question(value))
+    pattern = rf"\b{language_words}(?: language)?(?: proficiency| level)?(?: is)? {level_words}\b"
+    reverse = rf"\b{level_words} (?:level of |proficiency in |command of )?{language_words}\b"
+    for record in _usable_evidence(item.get("evidence")):
+        quote = normalize_question(str(record.get("quote", "")))
+        matches = list(re.finditer(pattern, quote)) + list(re.finditer(reverse, quote))
+        if any(not {"not", "never", "no"}.intersection(quote[:match.start()].split()[-2:]) for match in matches):
+            evidence.append(record)
+    if not evidence:
+        return _unknown(question, "Proficiency lacks explicit source evidence; language presence alone is insufficient")
+    return _known(value, "master_profile:" + pointer, evidence=evidence, scope={"language": language},
+                  interpretation="Exact sourced proficiency; no fluency, native-speaker or CEFR conversion")
+
+
+def _current_salary(question: str, profile: dict, context: dict) -> dict:
+    """Resolve historical compensation independently of desired salary and job pay."""
+    salary = profile.get("compensation", {}).get("current_salary")
+    if not isinstance(salary, dict) or salary.get("amount") is None:
+        return _unknown(question, "No explicit current-salary amount is recorded")
+    pointer = "/compensation/current_salary"
+    evidence = _usable_evidence(profile.get("evidence", {}).get(pointer))
+    evidence += _usable_evidence(profile.get("evidence", {}).get(pointer + "/amount"))
+    amount_is_sourced = bool(evidence)
+    for field in ("currency", "period", "basis", "component"):
+        evidence += _usable_evidence(profile.get("evidence", {}).get(pointer + "/" + field))
+    metadata = {"current_salary_amount": salary["amount"], "salary_source": "master_profile:" + pointer,
+                "salary_currency": salary.get("currency")}
+    if not amount_is_sourced:
+        return _unknown(question, "Current-salary amount is recorded but has no verified provenance", **metadata)
+    missing_profile = [field for field in ("currency", "period", "basis") if not salary.get(field)]
+    missing_form = [field for field in ("currency", "period", "basis") if not context.get(field)]
+    if missing_profile or missing_form:
+        details = []
+        if missing_profile:
+            details.append("profile units missing: " + ", ".join(missing_profile))
+        if missing_form:
+            details.append("audited form units missing: " + ", ".join(missing_form))
+        return _unknown(question, "Current-salary amount is known; " + "; ".join(details),
+                        missing_profile_units=missing_profile, missing_form_units=missing_form, **metadata)
+    if str(salary["currency"]).casefold() != str(context["currency"]).casefold():
+        return _unknown(question, "Current-salary currency does not match the audited form; no currency conversion is inferred", **metadata)
+    if str(salary["basis"]).casefold() != str(context["basis"]).casefold():
+        return _unknown(question, "Current-salary gross/net basis does not match the audited form", **metadata)
+    if salary.get("component") != context.get("component"):
+        return _unknown(question, "Current-salary base/total component does not match the audited form", **metadata)
+    period, requested_period = str(salary["period"]).casefold(), str(context["period"]).casefold()
+    if period not in {"monthly", "annual"} or requested_period not in {"monthly", "annual"}:
+        return _unknown(question, "Current salary supports only explicit monthly or annual periods", **metadata)
+    try:
+        if isinstance(salary["amount"], bool):
+            raise ValueError("Boolean is not a monetary amount")
+        amount = Decimal(str(salary["amount"]))
+        if not amount.is_finite() or amount < 0:
+            raise ValueError("Salary must be finite and nonnegative")
+        if period != requested_period:
+            amount = amount * 12 if requested_period == "annual" else amount / 12
+        answer = int(amount) if amount == amount.to_integral_value() else float(amount)
+    except (ValueError, TypeError, InvalidOperation):
+        return _unknown(question, "Current-salary amount is not a valid nonnegative number", **metadata)
+    return _known(answer, "master_profile:" + pointer, evidence=evidence,
+                  current_salary_amount=answer, original_current_salary=dict(salary),
+                  salary_currency=context["currency"], salary_period=requested_period,
+                  salary_basis=context["basis"], salary_component=context.get("component"),
+                  salary_source="master_profile:" + pointer,
+                  salary_reason="Explicit current salary with matching units; monthly/annual normalization only",
+                  scope={key: context.get(key) for key in ("currency", "period", "basis", "component")})
+
+
 def _salary(root: Path, question: str, profile: dict, job: dict, context: dict) -> dict:
     required = ("currency", "period", "basis")
     missing = [key for key in required if not context.get(key)]
@@ -347,6 +442,20 @@ def resolve_question(root: Path, question: str, profile: dict, job: dict, contex
     context = {"country": job.get("country"), "company": job.get("company"), "job_id": job.get("id"), **(context or {})}
     key = question_key(question)
     profile_unknown = None
+    if key.startswith("language_proficiency:"):
+        language = key.partition(":")[2]
+        if context.get("language") and str(context["language"]).casefold() != language:
+            return _unknown(question, "Question and audited language context conflict")
+        context["language"] = language
+        result = _language_proficiency(profile, question, language)
+        if result["status"] == "KNOWN":
+            return result
+        profile_unknown = result
+    if key == "current_salary":
+        result = _current_salary(question, profile, context)
+        if result["status"] == "KNOWN":
+            return result
+        profile_unknown = result
     explicit_skill = _question_skill(question)
     contextual_skill = context.get("skill") or context.get("technology")
     if explicit_skill and contextual_skill and explicit_skill != _skill_key(contextual_skill):
@@ -402,7 +511,7 @@ def resolve_question(root: Path, question: str, profile: dict, job: dict, contex
         if len(current) == 1 and current[0].get(field):
             return _known(current[0][field], "master_profile:/experience:single_current/" + field)
     # Names are not split: culturally ambiguous first/family-name boundaries require evidence.
-    if key in {"first_name", "last_name"} and profile.get(key):
+    if key in {"first_name", "middle_name", "last_name"} and profile.get(key):
         return _known(profile[key], "master_profile:/" + key)
     # Legal facts can be recorded per country; never reuse an unscoped boolean.
     if key in _LEGAL and context.get("country"):
@@ -430,7 +539,7 @@ def resolve_question(root: Path, question: str, profile: dict, job: dict, contex
         if salary_result["status"] == "KNOWN":
             return salary_result
     with _bank(root) as (bank, directory):
-        candidates = [a for a in bank["answers"] if a.get("approved") and (a.get("semantic_key") == key or (key.startswith("skill_years_experience:") and a.get("semantic_key") == "years_experience" and _skill_key(str(a.get("scope", {}).get("skill", ""))) == key.partition(":")[2]))
+        candidates = [a for a in bank["answers"] if a.get("approved") and (a.get("semantic_key") == key or (key.startswith("language_proficiency:") and question_key(a.get("question", "")) == key) or (key.startswith("skill_years_experience:") and a.get("semantic_key") == "years_experience" and _skill_key(str(a.get("scope", {}).get("skill", ""))) == key.partition(":")[2]))
                       and _scope_matches(a.get("scope", {}), context) and _has_required_scope(question, a.get("scope", {}))]
         if key in _LEGAL:
             candidates = [a for a in candidates if a.get("scope", {}).get("country")]
@@ -470,4 +579,9 @@ def resolve_question(root: Path, question: str, profile: dict, job: dict, contex
             return _known(entry["answer"], entry["source"], answer_id=entry["id"], scope=entry.get("scope", {}))
     if key == "expected_salary":
         return salary_result
+    if key == "cover_message":
+        if context.get("requires_personal_authorship"):
+            return _unknown(question, "This employer requires applicant-authored prose; a stored applicant-authored answer is needed")
+        from .cover import compose_cover_message
+        return compose_cover_message(root, profile, job)
     return profile_unknown or _unknown(question, "No approved, context-compatible fact found in profile, Answers Bank or previous records")

@@ -177,3 +177,114 @@ def test_profile_only_missing_known_fields_are_saved(configured):
     assert state["submissions"] == 1
     assert [item["question"] for item in result["updates"]] == ["Email"]
     assert Path(result["snapshot_path"]).is_file()
+
+
+def _write_adapter(root, adapter):
+    (root / 'config/platforms.yaml').write_text(yaml.safe_dump({'platforms': {'fixture': adapter}}))
+
+
+def test_vacancy_url_allowlist_rejects_other_job_on_same_host(configured):
+    root, job, profile, cv, adapter, state = configured
+    adapter['allowed_job_urls'] = [job['job_url']]
+    _write_adapter(root, adapter)
+    job['job_url'] += '?job_id=other'
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'BLOCKED_BY_PLATFORM'
+    assert 'vacancy URLs' in result['failure_reason']
+    assert state['submissions'] == 0
+
+
+def test_apply_url_and_canonical_tracking_url_are_honored(configured):
+    root, job, profile, cv, adapter, state = configured
+    canonical = job['job_url']
+    job['job_url'] = canonical + '/listing'
+    job['apply_url'] = canonical + '?utm_source=fixture#application'
+    adapter['allowed_job_urls'] = [job['job_url'], canonical]
+    adapter['identity_checks'] = [{'locator': {'selector': 'input[name="job_id"]'}, 'attribute': 'value', 'expected': '21084'},
+                                  {'locator': {'selector': 'h1'}, 'expected': 'Fixture Frontend Developer'}]
+    state['html'] = HTML.replace('<body>', '<body><h1>Fixture Frontend Developer</h1><input type="hidden" name="job_id" value="21084">')
+    _write_adapter(root, adapter)
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'SUBMITTED', result
+    assert result['final_url'].startswith(canonical + '?utm_source=fixture')
+    assert state['submissions'] == 1
+
+
+@pytest.mark.parametrize('change', ['wrong_id', 'wrong_text', 'duplicate_id'])
+def test_identity_mismatch_blocks_before_any_candidate_fields_are_filled(configured, change):
+    root, job, profile, cv, adapter, state = configured
+    adapter['identity_checks'] = [{'locator': {'selector': 'input[name="job_id"]'}, 'attribute': 'value', 'expected': '21084'},
+                                  {'locator': {'selector': 'h1'}, 'text': 'Fixture Frontend Developer'}]
+    extra = '<h1>Fixture Frontend Developer</h1><input type="hidden" name="job_id" value="21084">'
+    if change == 'wrong_id':
+        extra = extra.replace('21084', '99999')
+    if change == 'wrong_text':
+        extra = extra.replace('Frontend', 'Backend')
+    if change == 'duplicate_id':
+        extra += '<input type="hidden" name="job_id" value="21084">'
+    state['html'] = HTML.replace('<body>', '<body>' + extra)
+    _write_adapter(root, adapter)
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'BLOCKED_BY_PLATFORM', result
+    assert not result['answers']
+    assert state['submissions'] == 0
+
+
+@pytest.mark.parametrize("input_type", ["hidden", "text"])
+def test_identity_is_rechecked_after_form_changes_before_submit(configured, input_type):
+    root, job, profile, cv, adapter, state = configured
+    adapter['identity_checks'] = [{'locator': {'selector': 'input[name="job_id"]'}, 'attribute': 'value', 'expected': '21084'}]
+    state['html'] = HTML.replace('<body>', f'<body><input type="{input_type}" id="job-identity" name="job_id" value="21084">')
+    state['html'] = state['html'].replace("document.getElementById('one').hidden=true;", "document.getElementById('job-identity').value='99999';document.getElementById('one').hidden=true;")
+    _write_adapter(root, adapter)
+    intents = []
+    result = apply_job(root, job, profile, cv, submit=True, before_submit=intents.append)
+    assert result['status'] == 'BLOCKED_BY_PLATFORM', result
+    assert ('live form value' if input_type == 'text' else 'expected attribute') in result['failure_reason']
+    assert state['submissions'] == 0
+    assert not intents
+
+
+def test_post_submit_timeout_preserves_private_visible_evidence(configured):
+    import stat
+    root, job, profile, cv, adapter, state = configured
+    state['html'] = HTML.replace("document.getElementById('confirmation').hidden=false;", "document.body.insertAdjacentHTML('beforeend','<p>Processing receipt; keep this page.</p>');")
+    state['html'] = state['html'].replace('<body>', '<body><input type="hidden" value="FIXTURE_HIDDEN_TOKEN">')
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'SUBMISSION_UNCONFIRMED', result
+    assert result['retryable'] is False
+    assert state['submissions'] == 1
+    evidence = result['browser_evidence']
+    text_path, screenshot = Path(evidence['visible_text_path']), Path(evidence['screenshot_path'])
+    assert 'Processing receipt' in text_path.read_text()
+    assert 'FIXTURE_HIDDEN_TOKEN' not in text_path.read_text()
+    assert screenshot.read_bytes().startswith(b'\x89PNG')
+    assert stat.S_IMODE(text_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(screenshot.stat().st_mode) == 0o600
+    assert stat.S_IMODE(text_path.parent.stat().st_mode) == 0o700
+    assert not result['evidence_capture_errors']
+    assert result['final_url'] == job['job_url']
+
+
+def test_evidence_capture_failure_is_explicit_and_does_not_enable_retry(configured):
+    root, job, profile, cv, adapter, state = configured
+    (root / 'data/browser-evidence').write_text('Fixture path conflict')
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'SUBMITTED', result
+    assert result['evidence_capture_errors'][0]['operation'] == 'create_private_evidence_directory'
+    assert result['retryable'] is False
+    assert state['submissions'] == 1
+
+
+def test_snapshot_upload_keeps_original_tailored_filename(configured):
+    root, job, profile, cv, adapter, state = configured
+    snapshot = root / 'cv.pdf'
+    Path(cv['pdf_path']).rename(snapshot)
+    metadata = root / 'metadata.json'
+    metadata.write_text(json.dumps({'pdf_path': '/original/Fixture_Frontend_Developer_CV.pdf'}))
+    cv.update(pdf_path=str(snapshot), metadata_path=str(metadata))
+    state['html'] = state['html'].replace('<input type="file" required>', '<input type="file" required onchange="document.getElementById(\'confirmation\').innerText += \' Uploaded: \' + this.files[0].name">')
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'SUBMITTED', result
+    assert result['upload_evidence']['filename'] == 'Fixture_Frontend_Developer_CV.pdf'
+    assert 'Fixture_Frontend_Developer_CV.pdf' in result['confirmation_evidence']['marker_text']

@@ -1,6 +1,6 @@
 # Acceptance evidence — 2026-09-26
 
-The initial implementation milestone is implemented and tested. **The complete operational goal is not yet accepted: no suitable real-job submission has been confirmed.** Local fixture submissions never appear in the production tracker.
+**The first real application pipeline is verified:** Total-TECH's Junior FrontEnd Developer form confirmed submission on 2026-09-26; exact artifacts and repeat-run duplicate prevention were checked. Its source listing is dated August 2023, so recent recruiting activity remains unverified. Broader platform/profile coverage and remaining candidate answers are still pending. Local fixture submissions never appear in the production tracker.
 
 | Area | Observed evidence | Status |
 | --- | --- | --- |
@@ -9,24 +9,24 @@ The initial implementation milestone is implemented and tested. **The complete o
 | OCR | Actual raster PDF → Poppler/Tesseract recognition; unreviewed output rejected; reviewed transcription hashes checked | Passed local fixture |
 | Master LaTeX/PDF | Actual Tectonic compilation, two-page selectable PDF, error/reference/glyph/overflow checks, visual inspection | Passed |
 | Truthful tailoring | Sourced content ranking, unsupported-claim rejection, immutable versions, hash validation | Passed deterministic baseline |
-| Discovery | Fourteen public configurations; 90 real target-title listings stored, including Workable and FlairsTech | Passed for documented sources |
-| Eligibility | Latest assessment excludes all 90 current listings; role, skills, experience, location and mandatory-unknown reasons stored | No suitable current listing |
+| Discovery | Sixteen enabled public configurations plus verified direct imports; 100 real target-title listings stored | Passed for documented sources |
+| Eligibility | Latest assessment: 98 excluded, one blocked on unknown fields, one qualified and submitted | Reasons and unknowns retained |
 | Company research / ATS | Real listing provenance and public website research; explicit employer claims; transparent component scores | Passed baseline |
 | Answers | User-approved notice, legal/country, conditional relocation and net salary facts; sourced education/current-role summaries; explicit numeric experience only | Passed |
 | Optional model analysis | Strict schema, exact quotes, existing fact IDs and unsupported-output rejection | Mock API contract passed; live credentials absent |
 | Salary / FX | Monthly/annual normalization; source/period/basis/jurisdiction checks; dated current EGP→SAR public-provider response stored locally; gross remains unknown without payroll evidence | Passed scoped rules |
-| Browser engine | Real Chromium disposable fixtures cover controls, PDF upload digest, multistep navigation, unknown fields, CAPTCHA/auth blocks and positive receipts | Passed local fixtures |
+| Browser engine | Chromium fixtures cover controls, uploads, unknowns and restrictions; exact vacancy URL/job ID guards and real Total-TECH positive receipt | Passed fixtures and one audited live form |
 | Profile completion | Actual local profile-editor fixture: missing known fields only, conflicts retained, save confirmation | Passed local fixture |
-| Connected pipeline | Real fixture PDF extraction → profile → LaTeX → PDF → job analysis/research → tailored PDF → browser form → receipt → exact snapshot → SQLite/CSV | Local acceptance only |
+| Connected pipeline | Supplied CV → canonical profile → real job discovery/analysis/research → tailored LaTeX/PDF → known answers → employer form → receipt → exact snapshot → SQLite/CSV | Passed for Total-TECH form |
 | Duplicate/recovery safety | Repeated and concurrent claims, cross-platform missing-location matches, rejected history, crash reconciliation, stale candidate/job revisions and CV tampering | Covered by regressions |
-| Live operation | Production batch: 90 discovered, 90 excluded after latest analysis, zero qualified, zero submitted | Real submission pending |
+| Live operation | Production batch: 100 discovered, 98 excluded, one pending unknowns, one confirmed submission; repeats retained exactly one submit event | First real application verified |
 | GitHub | Requested private repository created under authenticated account; source/data exclusions verified | Passed: private main pushed and verified |
 
 ## Evidence locations (private local data)
 
 - `data/source-cv/manifest.json` and immutable copies/extractions.
 - `data/approved/user-clarification-2026-09-26.json`; prior profile revision under `data/master-cv/revisions/`.
-- `data/master-cv/master-cv.tex` and `master-cv.pdf`, pointing to immutable version `d7cab1a32c897821e899`.
+- `data/master-cv/master-cv.tex` and `master-cv.pdf`, pointing to immutable version `2add1b1bee63bd100dbb` with the later approved English level. Earlier version `d7cab1a32c897821e899` remains preserved.
 - `data/discovery/` contains complete source listings, source failures, original and corrected assessments. Earlier classifications are retained in history; the latest production database is authoritative for current states.
 - `data/live-run-verified.json`, `data/report-latest.json`, `data/workai.sqlite3`, `data/applications/applications.csv`.
 - `data/fx/EGP_SAR.json` contains the actual dated rate evidence, not a hardcoded future answer.
@@ -34,17 +34,32 @@ The initial implementation milestone is implemented and tested. **The complete o
 
 ## Remaining operational acceptance
 
-1. Discover a materially suitable currently open role with all hard requirements established. Broaden approved public employers and permitted platform integrations without weakening truthfulness.
-2. Audit that employer's actual application route, required questions and confirmation signals; configure any required login session securely. No production application/profile adapter is enabled by default.
+1. Broaden current-vacancy and permitted platform coverage without weakening truthfulness. The first receipt is from a 2023 listing still accepting applications; it does not prove current recruiter activity.
+2. Audit additional employers' routes, required questions and confirmations; configure required login sessions securely. The current production mapping is restricted to the one audited Total-TECH vacancy.
 3. Resolve only genuinely missing mandatory candidate facts. Current examples include language proficiency, academic dates/grades, citizenship/military status where applicable, explicit base/total compensation, and any gross calculation requiring reliable payroll rules. Do not infer these from the CV or job description.
-4. Run the live orchestrator and capture an actual employer receipt plus exact CV, sourced answers, event trail and CSV record. Re-run to prove no duplicate submission.
-5. Only then mark real end-to-end application acceptance passed. Additional platform coverage, general-layout extraction and broader model reasoning remain engineering work. Reviewed OCR and bounded optional model analysis now exist, but neither establishes universal document understanding; no live model call has been made.
+4. Resolve the already-requested mandatory Advansys answers and establish salary field units before applying. Continue unrelated compatible jobs while those answers are pending.
+5. Extend real acceptance to additional forms and platform profile completion. General-layout extraction and broader model reasoning remain engineering work. Reviewed OCR and bounded optional model analysis do not establish universal document understanding; no live model call has been made.
+
+## First confirmed live application
+
+- Employer/position: Total-TECH Co., Junior FrontEnd Developer, Cairo, Egypt.
+- Source: `https://totaltech.me/job/total-tech-co-cairo-egypt-full-time-junior-frontend-developer/`, posting date **2023-08-29**. Normal application form had no expired/filled marker or visible authentication/challenge.
+- Confirmation: **“Your job application has been submitted successfully”**, observed **2026-09-26 16:42:00 UTC**. No separate confirmation ID was exposed.
+- Application: `app_6329a2f7f4c947939eb1164c661df842`; source vacancy ID `21084`. Internal job `job_6bd3762ec29bd7f43c5f3768`.
+- Uploaded filename: `Total-TECH_Co_Junior_FrontEnd_Developer_CV.pdf`; SHA256 `342f57ca481503668f3f481635e2fa2387db8a2f52b6d823d2f0fa62620beff5`. Exact LaTeX/PDF, job/research/ATS, sourced answers, durable intent and result are sealed in the application attempt.
+- Receipt screenshot was visually inspected; text/screenshot hashes and the entire snapshot manifest were verified. CSV records SUBMITTED. The application used known name/email and unchanged verified project descriptions; no candidate fact was invented.
+- Repeat run and full 94-job run retained **one APPLICATION_STARTED, one SUBMISSION_INTENT and one SUBMITTED event**, with duplicate-prevention events instead of another browser attempt. A run summary's SUBMITTED state is an existing application, not another application count.
+- Private evidence index: `data/verification-first-live.json`. Supporting runs: `data/totaltech-live-result.json`, `data/totaltech-repeat-result.json`, `data/live-run-first-confirmed.json`, `data/report-first-confirmed.json`.
+
+This establishes submission to the website and stored evidence. It does not prove recruiter review, recent hiring activity, an interview or hiring probability. The original sealed snapshot remains unchanged; its receipt paths point to retained private `data/browser-evidence/` artifacts.
+
+The later 100-job batch added six sourced descriptions and recorded 98 exclusions, one required-information block and the same single confirmed application. Evidence: `data/live-run-100-jobs.json`, `data/report-100-jobs.json`, and the direct-employer source audit. Subsequent approved name components, English Good, gender and current salary units were archived privately and incorporated without altering the submitted CV. New snapshot-archival regressions verify that local receipt damage or persistence failures cannot erase a confirmed submission or cause a repeat submit.
 
 ## Platform observations
 
 Normal unauthenticated Wuzzuf and Bayt search requests returned HTTP 403; Naukrigulf timed out. These sources were recorded and not bypassed. A normal browser inspection of a Bosta Lever QA application revealed custom required questions and hCaptcha integration; the role was unsuitable, no fields were filled and no CV was uploaded. Public feed availability does not prove form support. See `docs/JOB_SOURCES.md` and `docs/PLATFORMS.md`.
 
-## Verification record
+## Historical verification record — before the first live receipt
 
 GitHub CI passed on implementation commit `3dd96fa588f0a41a57b6ba6d17888c9627ecfaec`: **111 tests passed**, including actual PDF compilation and Chromium integration, plus the tracked-secret audit. [Verified workflow run](https://github.com/Ahmed-elssamman/Ahmed-ElSamman-CV-Automation/actions/runs/36253883443). `main` was pushed; local and remote heads matched; Git status was clean; repository visibility was PRIVATE. No fixture is counted as a real application.
 

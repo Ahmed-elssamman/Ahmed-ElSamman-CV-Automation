@@ -44,6 +44,14 @@ def test_greenhouse_updates_are_not_posting_dates():
     assert jobs.analyze_job(parsed)["required_skills"] == ["Angular"]
 
 
+def test_jsonld_text_address_is_a_valid_location():
+    parsed = jobs.parse_job({"title": "Frontend Developer", "hiringOrganization": {"name": "Employer"},
+                            "jobLocation": {"@type": "Place", "address": "Cairo, Egypt."},
+                            "description": "React developer", "url": "https://example.org/jobs/1"}, "jsonld")
+    assert parsed["country"] == "Egypt"
+    assert parsed["city"] == "Cairo"
+
+
 @pytest.mark.parametrize("text,expected", [
     ("EGP 30,000 - 45,000 gross per month", (30000, 45000, "EGP", "monthly", "gross")),
     ("120k–180k USD annual base", (120000, 180000, "USD", "annual", "base")),
@@ -104,6 +112,77 @@ def test_academic_alternatives_and_database_replication(profile):
     assert jobs.assess_eligibility(analysis, profile)["eligible"]
     postgraduate = make_job(description="Requirements\nAngular required.\nMaster's degree in Computer Science.")
     assert not jobs.assess_eligibility(postgraduate, profile)["eligible"]
+
+
+def test_framework_examples_do_not_become_mandatory_brands(profile):
+    job = make_job(description="Requirements\nFamiliarity with responsive design principles and frameworks (e.g., Bootstrap).\nFamiliar with ReactJS, HTML, CSS and JavaScript.")
+    analysis = jobs.analyze_job(job)
+    assert "Bootstrap" not in analysis["required_skills"]
+    assert "Bootstrap" in analysis["technology_keywords"]
+    assert "React" in analysis["required_skills"]
+    strict = jobs.analyze_job(make_job(description="Requirements\nBootstrap required (e.g., its responsive grid)."))
+    assert "Bootstrap" in strict["required_skills"]
+
+
+def test_employer_history_is_not_candidate_experience(profile):
+    job = make_job(description="Requirements\n2 years of frontend development experience.\nAngular required.\nAbout the employer\nExample is a leading IT company with over 25 years of experience delivering mission-critical systems.")
+    analysis = jobs.analyze_job(job)
+    assert analysis["min_years_experience"] == 2
+    assert jobs.assess_eligibility(analysis, profile)["eligible"]
+
+
+@pytest.mark.parametrize("heading", ["What we're looking for", "What we’re looking for", "Required", "Required:"])
+def test_contracted_and_standalone_required_headings(heading):
+    job = make_job(title="Senior Software Developer", description=f"About the role\nProduction engineering.\n{heading}\nDeep Node.js and modern TypeScript.\nStrong React.\n5+ years building and maintaining production software.")
+    analysis = jobs.analyze_job(job)
+    assert set(analysis["required_skills"]) == {"Node.js", "TypeScript", "React"}
+    assert analysis["min_years_experience"] == 5
+    assert "Strong React." in analysis["qualifications"]
+
+
+def test_trufla_requirements_establish_role_fit_and_real_minimum(profile):
+    # Public Trufla vacancy trufla-851 / URL 51143, retrieved 2026-09-26.
+    description = """About Trufla
+Trufla builds digital infrastructure for insurance brokerages.
+What You'll Do
+Design and ship features end to end across our Node.js services and React front ends.
+What We're Looking For
+Required
+5+ years building and maintaining production software, with real ownership of what you shipped.
+Deep Node.js and modern JavaScript/TypeScript. You understand the runtime, not just the framework.
+Strong React, including state management, performance, and component design.
+Nice to Have (any one of these is a plus, none are dealbreakers)
+Cloud and container experience (AWS or GCP, Kubernetes, Terraform).
+About the company
+A company with over 25 years building production software."""
+    analysis = jobs.analyze_job(make_job(title="Senior Software Developer", description=description))
+    assert analysis["min_years_experience"] == 5
+    assert {"Node.js", "JavaScript", "TypeScript", "React"} <= set(analysis["required_skills"])
+    assert "AWS" in analysis["preferred_skills"] and "AWS" not in analysis["required_skills"]
+    result = jobs.assess_eligibility(analysis, profile)
+    assert result["status"] == "EXCLUDED"
+    assert any("at least 5 years" in reason for reason in result["reasons"])
+    assert not any("Generic software role" in reason for reason in result["reasons"])
+
+
+@pytest.mark.parametrize("phrase,minimum", [
+    ("5+ years building and maintaining production software.", 5),
+    ("Minimum 4 years maintaining production software.", 4),
+    ("2–4 years building web applications.", 2),
+])
+def test_building_and_maintaining_experience_phrases(phrase, minimum):
+    analysis = jobs.analyze_job(make_job(description="Required\nAngular required.\n" + phrase))
+    assert analysis["min_years_experience"] == minimum
+    optional = jobs.analyze_job(make_job(description="Required\nAngular required.\nPreferred\n" + phrase))
+    assert optional["min_years_experience"] is None
+
+
+def test_trailing_skill_duration_requires_specific_evidence(profile):
+    job = make_job(description="Requirements\n1-2 years of experience in front-end development.\nExperience using Angular at least 1 year.")
+    analysis = jobs.analyze_job(job)
+    assert analysis["experience_requirements"][-1]["skills"] == ["Angular"]
+    assert jobs.assess_eligibility(analysis, profile)["status"] == "NEEDS_INFORMATION"
+    assert jobs.assess_eligibility(analysis, {**profile, "experience_years_by_skill": {"Angular": 1}})["eligible"]
 
 
 def test_disjunctions_and_parenthetical_preferences(profile):
@@ -250,6 +329,85 @@ def test_law_and_language_never_guessed(profile):
     assert not result["eligible"]
     assert any("nationality" in q for q in result["unknowns"])
     assert any("English proficiency" in q for q in result["unknowns"])
+
+
+@pytest.mark.parametrize("requirement", [
+    "Fluent English required.", "Native English required.", "English fluency is required.",
+    "English at CEFR B2 level is required.", "English (C1).", "Professional working proficiency in English.",
+    "Professional English required.",
+    "Proficient in English (verbal and written).", "Strong written English is required.",
+    "Very good command of English.",
+])
+def test_good_english_does_not_establish_unverified_higher_or_different_level(profile, requirement):
+    profile["languages"] = [{"name": "English", "proficiency": "Good"}]
+    job = make_job(description="Requirements\nAngular required.\n" + requirement)
+    result = jobs.assess_eligibility(job, profile)
+    assert result["status"] == "NEEDS_INFORMATION"
+    assert any("English proficiency" in question for question in result["unknowns"])
+    assert profile["languages"][0]["proficiency"] == "Good"
+
+
+@pytest.mark.parametrize("actual,requirement", [
+    ("Good", "Good English is required."),
+    ("Very Good", "Good English is required."),
+    ("Excellent", "Very good command of English."),
+    ("Advanced", "Intermediate English required."),
+    ("B2", "English B1 required."),
+    ("C1", "English B2 required."),
+    ("Fluent", "English fluency required."),
+    ("Native", "Native English speaker required."),
+    ("Professional working proficiency", "Professional working proficiency in English required."),
+])
+def test_explicit_language_matches_and_comparable_levels(profile, actual, requirement):
+    profile["languages"] = [{"name": "English", "proficiency": actual}]
+    job = make_job(description="Required\nAngular required.\n" + requirement)
+    assert jobs.assess_eligibility(job, profile)["eligible"]
+
+
+@pytest.mark.parametrize("actual,requirement", [
+    ("Fluent", "English B2 required."),
+    ("C2", "Native English required."),
+    ("Excellent", "Fluent English required."),
+    ("B1", "English B2 required."),
+    ("not fluent", "Fluent English required."),
+    ("Good spoken; basic written", "Good English is required."),
+])
+def test_language_scales_and_ambiguous_profile_text_are_not_assumed_equivalent(profile, actual, requirement):
+    profile["languages"] = [{"name": "English", "proficiency": actual}]
+    result = jobs.assess_eligibility(make_job(description="Required\nAngular required.\n" + requirement), profile)
+    assert result["status"] == "NEEDS_INFORMATION"
+
+
+def test_missing_language_and_mixed_language_levels_stay_unknown(profile):
+    profile["languages"] = [{"name": "English", "proficiency": "Good"}]
+    missing = jobs.assess_eligibility(make_job(description="Required\nAngular required.\nFluent German required."), profile)
+    assert any("German proficiency" in question for question in missing["unknowns"])
+    profile["languages"].append({"name": "Arabic", "proficiency": "Fluent"})
+    mixed = make_job(description="Required\nAngular required.\nGood English and fluent Arabic required.")
+    assert jobs.assess_eligibility(mixed, profile)["status"] == "NEEDS_INFORMATION"
+    separated = make_job(description="Required\nAngular required.\nGood English; fluent Arabic required.")
+    assert jobs.assess_eligibility(separated, profile)["eligible"]
+
+
+def test_language_under_required_heading_is_not_silently_ignored(profile):
+    job = make_job(description="Required\nAngular required.\nFrench.")
+    result = jobs.assess_eligibility(job, profile)
+    assert result["status"] == "NEEDS_INFORMATION"
+    assert any("French proficiency" in question for question in result["unknowns"])
+
+
+@pytest.mark.parametrize("requirement", ["English required.", "English is required.", "Required language: English.", "Language required: English.", "English."])
+def test_bare_language_requirement_accepts_known_proficiency(profile, requirement):
+    profile["languages"] = [{"name": "English", "proficiency": "Good"}]
+    job = make_job(description="Required\nAngular required.\n" + requirement)
+    assert jobs.assess_eligibility(job, profile)["eligible"]
+
+
+@pytest.mark.parametrize("proficiency", [None, "", "UNKNOWN", "unavailable", "not fluent"])
+def test_bare_language_requirement_still_needs_known_proficiency(profile, proficiency):
+    profile["languages"] = [{"name": "English", "proficiency": proficiency}]
+    result = jobs.assess_eligibility(make_job(description="Required\nAngular required.\nEnglish required."), profile)
+    assert result["status"] == "NEEDS_INFORMATION"
 
 
 def test_preferred_education_and_languages_do_not_become_requirements(profile):

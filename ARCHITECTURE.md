@@ -28,6 +28,8 @@ flowchart TD
 
 ## Canonical data
 
+`cover.py` composes a job-scoped application message from exact validated professional facts. It records profile references, preserves existing approved answers and cannot supply unsupported motivations. Browser configuration can bind exact vacancy URLs and hidden job identifiers; these checks are repeated before the durable submit boundary. Receipt screenshots and visible text are captured privately with hashes, without copying cookies or hidden form tokens.
+
 Candidate profile is YAML with inline and JSON-pointer evidence, backed by untouched source hashes. Date precision remains as supplied; month-only dates must not become exact dates. Skills are only those explicitly supported in source sections/projects/roles. Legal answers require country scope. Overlapping employment must not be double-counted into experience claims.
 
 SQLite normalizes Candidate, Company, Job, Application, CVVersion, ATSAnalysis, Question, Answer, PlatformProfile, ResearchRecord and ApplicationEvent. JSON columns retain complete source records while IDs and foreign keys establish relationships. WAL and immediate transactions serialize claims. Event and answer history cannot be updated/deleted through normal SQL; all supported operations preserve history. Runtime data is excluded from source control.
@@ -39,6 +41,8 @@ The preparation sequence is DISCOVERED → ANALYZED → QUALIFIED → RESEARCHED
 One application exists per normalized job. Canonical URLs strip tracking parameters but retain job identifiers. Cross-platform company/role/location matches are treated as possible duplicates conservatively. The runner lock excludes simultaneous submitters, and database transactions protect concurrent claims.
 
 A crash during form entry or submission becomes RECONCILIATION_REQUIRED. It cannot retry until recorded platform evidence proves submission or non-submission. The latter permits a retry; the former records the receipt. Unknowns/config blocks retry after meaningful knowledge changes. Preparation errors retry only within explicit bounds. Historical CV versions and sealed attempt results remain unchanged; current CSV can be regenerated from the database at any time.
+
+Positive confirmation is persisted before local receipt archiving. Verified screenshot/text copies enter each new immutable snapshot; original captures remain. Archive metadata has a restricted update method and its own event, preserving a single SUBMITTED event for the external action. Local archive failure retains the receipt and confirmed state, marks incomplete archival, and cannot trigger resubmission. Repair must preserve any sealed history.
 
 ## External content and automation boundary
 

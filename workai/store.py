@@ -23,6 +23,10 @@ recruiter recruiter_url interview_date follow_up_date last_updated result reject
 submitted_at confirmation_id confirmation_url failure_reason retryable last_attempt snapshot_path""".split()
 
 TERMINAL = {"SUBMITTED", "INTERVIEW", "REJECTED", "WITHDRAWN"}
+APPLICATION_ARCHIVE_FIELDS = frozenset({
+    "browser_evidence", "browser_evidence_archive_errors", "snapshot_archival_status",
+    "application_questions", "application_answers", "knowledge_fingerprint", "retryable",
+})
 TRANSITIONS = {
     "DISCOVERED": {"ANALYZED", "EXCLUDED", "FAILED"},
     "ANALYZED": {"QUALIFIED", "EXCLUDED", "BLOCKED_UNKNOWN_FIELDS", "FAILED"},
@@ -248,6 +252,29 @@ class Store:
             data.update(updates)
             self.db.execute("UPDATE applications SET state=?,data=?,updated_at=? WHERE id=?", (state, json_value(data), utcnow(), application_id))
             self.event(state, {"previous_state": before, "updates": updates, "evidence": evidence}, application_id=application_id, job_id=application["job_id"])
+            return self.application(application_id)
+
+    def update_application_archive(self, application_id: str, updates: dict) -> dict:
+        """Audit local metadata after a confirmed action without another submit event.
+
+        Status and receipt identity/timestamp are deliberately outside this
+        whitelist. An archival annotation cannot change the external action.
+        """
+        if set(updates) - APPLICATION_ARCHIVE_FIELDS:
+            raise StateError("Archive metadata cannot change protected application or receipt fields")
+        if updates.get("retryable") is True:
+            raise StateError("A confirmed application cannot become retryable through archival metadata")
+        with self.transaction():
+            application = self.application(application_id)
+            if application["application_status"] != "SUBMITTED":
+                raise StateError("Post-submission archive metadata requires a confirmed application")
+            data = {key: value for key, value in application.items()
+                    if key not in {"application_id", "job_id", "application_status", "created_at", "last_updated"}}
+            data.update(updates)
+            self.db.execute("UPDATE applications SET data=?,updated_at=? WHERE id=?",
+                            (json_value(data), utcnow(), application_id))
+            self.event("APPLICATION_ARCHIVE_UPDATED", {"application_status": "SUBMITTED", "updates": updates},
+                       application_id=application_id, job_id=application["job_id"])
             return self.application(application_id)
 
     def save_artifact(self, kind: str, identifier: str, owner_id: str, value: dict):

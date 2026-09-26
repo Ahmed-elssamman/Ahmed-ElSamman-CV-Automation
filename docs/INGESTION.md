@@ -19,7 +19,12 @@ available when normalization fails.
 ## Two-source reconciliation
 
 `reconcile_profiles(profiles, canonical=None)` combines evidence for matching
-facts and unions skills, bullets and distinct records. Every added fact retains
+facts and unions skills, bullets and distinct records. Before importing any
+facts, the direct API requires every input and existing canonical profile to
+have the same nonempty candidate ID and name. Name comparisons ignore case,
+spacing and punctuation; a supplied source name must identify the same person.
+Missing or different identities raise `CANDIDATE_IDENTITY_REVIEW_REQUIRED`
+without mutating the inputs. Every added fact retains
 source/page/quote provenance. On first ingestion, conflicting scalar values
 become YAML `null` (UNKNOWN); conflicting historical records are withheld as
 whole records so partial dates or titles cannot create misleading claims.

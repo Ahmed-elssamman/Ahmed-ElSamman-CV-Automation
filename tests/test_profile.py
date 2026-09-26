@@ -410,3 +410,45 @@ def test_real_local_ocr_recognizes_raster_pdf_but_requires_review(tmp_path, monk
     assert result['pages'][0]['method'] == 'ocr'
     with pytest.raises(ProfileError, match='OCR_REVIEW_REQUIRED'):
         normalize_profile(result, 'sha256:real-ocr-fixture')
+
+
+@pytest.mark.parametrize('field,value', [
+    ('candidate_id', 'another-candidate'), ('candidate_id', ''), ('candidate_id', None),
+    ('name', 'Another Candidate'), ('name', ''), ('name', None),
+    ('source_name', 'Another Candidate'),
+])
+@pytest.mark.parametrize('existing_canonical', [False, True])
+def test_reconciliation_rejects_missing_or_different_candidate_before_import(sample_profile, field, value, existing_canonical):
+    from workai.profile import reconcile_profiles
+    first = copy.deepcopy(sample_profile)
+    second = copy.deepcopy(sample_profile)
+    second[field] = value
+    second['skills'].append('Rust')
+    second['evidence'][f"/skills/{len(second['skills']) - 1}"] = [
+        {'source_id': 'user:other-candidate', 'quote': 'Rust', 'status': 'source_claim'}]
+    before_first, before_second = copy.deepcopy(first), copy.deepcopy(second)
+    with pytest.raises(ProfileError, match='CANDIDATE_IDENTITY_REVIEW_REQUIRED'):
+        if existing_canonical:
+            reconcile_profiles([second], canonical=first)
+        else:
+            reconcile_profiles([first, second])
+    assert first == before_first
+    assert second == before_second
+
+
+def test_reconciliation_accepts_same_name_with_punctuation_and_case(sample_profile):
+    from workai.profile import reconcile_profiles
+    second = copy.deepcopy(sample_profile)
+    second['name'] = 'AHMED EL SAMMAN'
+    second['source_name'] = 'Ahmed El-Samman'
+    result = reconcile_profiles([second], canonical=sample_profile)
+    assert result['candidate_id'] == sample_profile['candidate_id']
+    assert result['name'] == sample_profile['name']
+
+
+def test_reconciliation_rejects_missing_canonical_identity(sample_profile):
+    from workai.profile import reconcile_profiles
+    canonical = copy.deepcopy(sample_profile)
+    del canonical['candidate_id']
+    with pytest.raises(ProfileError, match='CANDIDATE_IDENTITY_REVIEW_REQUIRED'):
+        reconcile_profiles([sample_profile], canonical=canonical)

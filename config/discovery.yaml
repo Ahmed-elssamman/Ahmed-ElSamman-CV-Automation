@@ -40,6 +40,10 @@ sources:
     board: robusta
     company: Robusta
     company_url: https://robustagroup.com/
+  - name: Advansys Egypt careers
+    type: workable_widget
+    board: advansys-esc-1
+    company: Advansys
   - name: Sumerge careers
     type: workable_widget
     board: sumerge-1
@@ -83,3 +87,8 @@ sources:
   - {name: Naukrigulf, type: manual_session, enabled: false}
   - {name: Akhtaboot, type: manual_session, enabled: false}
   - {name: Forasna, type: manual_session, enabled: false}
+  - name: Total-TECH junior frontend careers
+    type: jsonld
+    url: https://totaltech.me/job/total-tech-co-cairo-egypt-full-time-junior-frontend-developer/
+    company: Total-TECH Co.
+    company_url: https://totaltech.me/

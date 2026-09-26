@@ -437,6 +437,22 @@ def reconcile_profiles(profiles: list[dict], *, canonical: dict | None = None) -
     """
     if not profiles and canonical is None:
         raise ProfileError("At least one normalized source is required")
+    identities = []
+    for candidate in ([canonical] if canonical is not None else []) + profiles:
+        identity = candidate.get("candidate_id") if isinstance(candidate, dict) else None
+        name = candidate.get("name") if isinstance(candidate, dict) else None
+        if not isinstance(identity, str) or not identity.strip() or not isinstance(name, str):
+            raise ProfileError("CANDIDATE_IDENTITY_REVIEW_REQUIRED: every profile must have a nonempty candidate ID and name")
+        normalized_name = re.sub(r"[\W_]+", "", name.casefold())
+        if not normalized_name:
+            raise ProfileError("CANDIDATE_IDENTITY_REVIEW_REQUIRED: every profile must have a nonempty candidate ID and name")
+        source_name = candidate.get("source_name")
+        if source_name is not None and (not isinstance(source_name, str)
+                or re.sub(r"[\W_]+", "", source_name.casefold()) != normalized_name):
+            raise ProfileError("CANDIDATE_IDENTITY_REVIEW_REQUIRED: source name differs from the candidate name")
+        identities.append((identity, normalized_name))
+    if len(set(identities)) != 1:
+        raise ProfileError("CANDIDATE_IDENTITY_REVIEW_REQUIRED: profiles identify different candidates; no facts imported")
     profile = copy.deepcopy(canonical if canonical is not None else profiles[0])
     incoming_profiles = profiles if canonical is not None else profiles[1:]
     profile.setdefault("conflicts", [])

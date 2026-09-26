@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 
-ANALYZER_VERSION = "2026.09.26.4"
+ANALYZER_VERSION = "2026.09.26.6"
 TARGET_COUNTRIES = {"Egypt", "Saudi Arabia", "United Arab Emirates", "Qatar", "Kuwait", "Bahrain", "Oman"}
 COUNTRIES = {
     "Egypt": ("EG", "egypt", "cairo", "giza", "alexandria", "mansoura"),
@@ -223,6 +223,10 @@ def parse_job(payload: dict, platform: str = "manual") -> dict:
     if isinstance(location, list):
         location = location[0] if location else ""
     address = location.get("address", location) if isinstance(location, dict) else {}
+    if isinstance(address, str):
+        # schema.org Place.address permits both PostalAddress and free text.
+        location = address
+        address = {}
     city = p.get("city") or address.get("city") or address.get("addressLocality")
     location_text = str(location.get("name") or ", ".join(str(address.get(k, "")) for k in ["city", "addressLocality", "region", "country", "addressCountry"]) if isinstance(location, dict) else location)
     country = _country(p.get("country")) or _country(address.get("country") or address.get("addressCountry")) or _country(location_text)
@@ -304,16 +308,18 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
         low = line.lower()
         # A preference inside parentheses qualifies that variant, not the whole requirement.
         clean_line = re.sub(r"\([^)]*(?:preferred|nice.to.have|a plus)[^)]*\)", "", line, flags=re.I)
+        # A parenthetical example does not make its brand a mandatory skill.
+        clean_line = re.sub(r"\(\s*(?:e\.?g\.?|for example)\s*[,;:]?[^)]*\)", "", clean_line, flags=re.I)
         clean_low = clean_line.lower()
         if len(line) < 100:
             if not canonical_skills(clean_line) and re.search(r"nice.to.have|preferred|bonus|desirable", clean_low): mode = "preferred"
-            elif re.search(r"^(?:(?:minimum |basic |essential )?(?:requirements|qualifications)|what you.?ll need|what you need|who are you|who you are|must[ -]have|what you bring|what we are looking for)", low): mode = "required"
+            elif re.search(r"^(?:(?:minimum |basic |essential )?(?:requirements|qualifications)|required\s*:?$|what you.?ll need|what you need|who are you|who you are|must[ -]have|what you bring|what we(?: are|['’]re) looking for)", low): mode = "required"
             elif re.search(r"^(?:responsibilities|what you.?ll do|what will you do|your role|what you.?ll lead|the role entails|job description)", low): mode = "responsibilities"
             elif re.search(r"benefits|what we offer", low): mode = "benefits"
             elif re.search(r"^about\b|why join|^what .+ offers", low): mode = "general"
         skills = canonical_skills(clean_line)
         optional = mode == "preferred" or bool(re.search(r"preferred|nice.to.have|bonus|is a plus|would be a plus|desirable", clean_low))
-        mandatory = mode == "required" or bool(re.search(r"\b(?:must|required|at least|proficien\w*|experience (?:with|in)|knowledge of|familiarity with|strong (?:understanding|knowledge))\b", clean_low))
+        mandatory = mode == "required" or bool(re.search(r"\b(?:must|required|at least|proficien\w*|experience (?:with|in)|knowledge of|familiar(?:ity)? with|strong (?:understanding|knowledge))\b", clean_low))
         if optional: preferred.extend(skills)
         elif mandatory:
             required.extend(skills)
@@ -329,8 +335,10 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
             education.append(line)
             if not optional and mode != "benefits": education_required.append(line)
         if not optional and re.search(r"\b(?:english|arabic|french|german)\b", low): languages.append(line)
-        for match in re.finditer(r"(?:(?:at least|minimum(?: of)?)\s*)?(\d+(?:\.\d+)?)\s*(?:[-–to]+\s*(\d+(?:\.\d+)?))?\+?\s*years?\b.{0,65}(?:experience|working|development)", line, re.I):
+        for match in re.finditer(r"(?:(?:at least|minimum(?: of)?)\s*)?(\d+(?:\.\d+)?)\s*(?:[-–to]+\s*(\d+(?:\.\d+)?))?\+?\s*years?\b.{0,65}(?:experience|working|development|building|maintaining)", line, re.I):
             if optional: continue
+            if re.search(r"(?:\bcompany|\bfirm|\borganization)\s+with\s+(?:over|more than|nearly|about)?\s*$", line[:match.start()], re.I):
+                continue
             experience.append(line)
             exp_requirements.append({"min": float(match.group(1)), "max": float(match.group(2)) if match.group(2) else None, "skills": skills, "text": line})
         # Employer feeds also expose labelled experience fields, with the unit
@@ -339,6 +347,10 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
         if labelled and not any(item["text"] == line for item in exp_requirements):
             experience.append(line)
             exp_requirements.append({"min": float(labelled.group(1)), "max": float(labelled.group(2)) if labelled.group(2) else None, "skills": [], "text": line})
+        trailing_years = re.search(r"\bexperience\s+(?:using|with|in)\s+.+?\s+(?:at least|for|of|minimum(?: of)?)\s+(\d+(?:\.\d+)?)\+?\s*years?\b", line, re.I)
+        if trailing_years and not optional and not any(item["text"] == line for item in exp_requirements):
+            experience.append(line)
+            exp_requirements.append({"min": float(trailing_years.group(1)), "max": None, "skills": skills, "text": line})
     technologies = canonical_skills(text + "\n" + str(job.get("position", "")))
     required = sorted(set(required + declared_required))
     preferred = sorted(set(preferred + declared_preferred) - set(required))
@@ -383,6 +395,56 @@ def candidate_years(profile: dict, today: date | None = None) -> float | None:
         except (ValueError, TypeError):
             continue
     return round(len(months) / 12, 2) if months else None
+
+
+_LANGUAGE_LEVELS = {
+    # Keep separate scales separate: informal labels do not establish CEFR,
+    # fluency, native status or a professional working proficiency rating.
+    "basic": ("qualitative", 0), "good": ("qualitative", 1),
+    "very good": ("qualitative", 2), "excellent": ("qualitative", 3),
+    "beginner": ("learning", 0), "elementary": ("learning", 1),
+    "intermediate": ("learning", 2), "upper intermediate": ("learning", 3),
+    "advanced": ("learning", 4),
+    **{level: ("cefr", rank) for rank, level in enumerate(["a1", "a2", "b1", "b2", "c1", "c2"])},
+}
+_LANGUAGE_LEVEL_PATTERN = re.compile(
+    r"\b(?:professional working proficiency|professional proficiency|very good|upper[ -]intermediate|"
+    r"native(?:[ -]level| speaker)?|fluent|fluency|proficient|basic|good|excellent|beginner|elementary|"
+    r"intermediate|advanced|[abc][12])\b", re.I)
+
+
+def _language_level(value: str) -> str:
+    value = re.sub(r"\s+", " ", str(value).strip().lower().replace("-", " ")).rstrip(".")
+    return {"fluency": "fluent", "native speaker": "native", "native level": "native"}.get(value, value)
+
+
+def _language_proficiency_satisfies(proficiency: Any, requirement: str, language: str) -> bool:
+    """Accept bounded, comparable evidence; False means unresolved, not disproved."""
+    if not isinstance(proficiency, str) or not proficiency.strip():
+        return False
+    # Separate unambiguous clauses so one language's level cannot satisfy
+    # another's. Mixed levels in the same clause stay unknown.
+    clauses = [part for part in re.split(r"[;.!?]\s*", requirement)
+               if re.search(r"\b" + re.escape(language) + r"\b", part, re.I)]
+    levels = {_language_level(match.group()) for clause in clauses
+              for match in _LANGUAGE_LEVEL_PATTERN.finditer(clause)}
+    actual = _language_level(proficiency)
+    if not levels and clauses:
+        name = re.escape(language)
+        bare = rf"(?:{name}(?:\s+language)?(?:\s+(?:is\s+)?required)?|(?:required\s+language|language\s+required)\s*:?\s*{name}|required\s*:\s*{name})"
+        known = actual in _LANGUAGE_LEVELS or actual in {
+            "native", "fluent", "proficient", "conversational", "limited working proficiency",
+            "professional proficiency", "professional working proficiency", "full professional proficiency",
+        }
+        return known and all(re.fullmatch(bare, clause.strip(), re.I) for clause in clauses)
+    if len(levels) != 1:
+        return False
+    requested = next(iter(levels))
+    if actual == requested:
+        return True
+    actual_scale, required_scale = _LANGUAGE_LEVELS.get(actual), _LANGUAGE_LEVELS.get(requested)
+    return bool(actual_scale and required_scale and actual_scale[0] == required_scale[0]
+                and actual_scale[1] >= required_scale[1])
 
 
 def assess_eligibility(job: dict, profile: dict) -> dict:
@@ -490,11 +552,14 @@ def assess_eligibility(job: dict, profile: dict) -> dict:
         elif re.search(r"computer science", requirement, re.I) and not re.search(r"computer science|computer engineering", degrees) and not re.search(r"related|equivalent|engineering", requirement, re.I):
             unknowns.append("Evidence of the specifically required computer science degree or employer-accepted equivalent.")
     for requirement in job.get("language_requirements", []):
-        if not re.search(r"fluent|fluency|native|proficien|required|must|professional|strong written", requirement, re.I): continue
+        if not (_LANGUAGE_LEVEL_PATTERN.search(requirement)
+                or requirement in job.get("qualifications", [])
+                or re.search(r"proficien|required|must|professional|strong written", requirement, re.I)):
+            continue
         for language in ["English", "Arabic", "French", "German"]:
             if not re.search(r"\b" + language + r"\b", requirement, re.I): continue
             item = next((x for x in profile.get("languages", []) if isinstance(x, dict) and x.get("name", "").lower() == language.lower()), None)
-            if not item or not item.get("proficiency"):
+            if not item or not _language_proficiency_satisfies(item.get("proficiency"), requirement, language):
                 unknowns.append(f"Verified {language} proficiency for requirement: {requirement}")
     deadline = job.get("application_deadline")
     if deadline:

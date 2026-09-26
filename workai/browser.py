@@ -9,12 +9,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
+import json
+from uuid import uuid4
 import re
 from urllib.parse import urlparse
 
 import yaml
 
 from .answers import resolve_question
+from .store import canonical_url
 
 
 def _result(status: str, *, reason: str | None = None, retryable: bool = False, **kwargs) -> dict:
@@ -46,6 +49,98 @@ def _locator(page, spec: dict):
 def _allowed_url(url: str, adapter: dict) -> bool:
     parsed = urlparse(url)
     return parsed.scheme in {"http", "https"} and parsed.hostname in adapter.get("allowed_hosts", [])
+
+
+def _job_url_allowed(url: str, adapter: dict) -> bool:
+    """Use tracker canonicalization while retaining meaningful job/query identifiers."""
+    allowed = adapter.get("allowed_job_urls")
+    if allowed is None:
+        return True
+    if not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) for item in allowed):
+        return False
+    return bool(url) and canonical_url(url) in {canonical_url(item) for item in allowed}
+
+
+def _identity_mismatch(page, adapter: dict) -> str | None:
+    if not _job_url_allowed(page.url, adapter):
+        return "Current page URL does not match the audited vacancy URLs"
+    checks = adapter.get("identity_checks", [])
+    if not isinstance(checks, list):
+        return "Job identity checks must be an audited list"
+    for index, check in enumerate(checks):
+        if not isinstance(check, dict) or not check.get("locator") or ("expected" not in check and "text" not in check):
+            return f"Job identity check {index} lacks a locator or exact expected value"
+        control = _locator(page, check["locator"])
+        if control.count() != 1:
+            return f"Job identity check {index} is missing or ambiguous"
+        expected = str(check.get("expected", check.get("text")))
+        attribute = check.get("attribute")
+        if attribute:
+            actual = control.get_attribute(attribute)
+            if actual != expected:
+                return f"Job identity check {index} does not match its expected attribute"
+            # Live form values can diverge from the original HTML value attribute.
+            if attribute == "value" and control.evaluate("el => 'value' in el") and control.input_value() != expected:
+                return f"Job identity check {index} has a changed live form value"
+        else:
+            if not control.is_visible() or control.inner_text().strip() != expected:
+                return f"Job identity check {index} does not match its exact visible text"
+    return None
+
+
+def _upload_filename(cv: dict, pdf_path: Path) -> str:
+    """Preserve original version names when the immutable snapshot is named cv.pdf."""
+    filename = cv.get("upload_filename")
+    if not filename and cv.get("metadata_path"):
+        try:
+            metadata = json.loads(Path(cv["metadata_path"]).read_text())
+            filename = Path(metadata.get("pdf_path", "")).name
+        except (OSError, ValueError, TypeError):
+            filename = None
+    filename = Path(str(filename or pdf_path.name)).name
+    if not filename.lower().endswith(".pdf") or any(ord(char) < 32 for char in filename):
+        raise ValueError("CV upload filename must be a safe PDF basename")
+    return filename
+
+
+def _capture_evidence(root: Path, job: dict, page) -> dict:
+    """Capture only rendered text and pixels while the browser session is alive."""
+    evidence = {"final_url": page.url, "captured_at": datetime.now(timezone.utc).isoformat(), "errors": []}
+    digest = hashlib.sha256(str(job.get("id") or job.get("job_url", "")).encode()).hexdigest()[:16]
+    base = Path(root) / "data" / "browser-evidence"
+    folder = base / (digest + "-" + uuid4().hex)
+    try:
+        base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        base.chmod(0o700)
+        folder.mkdir(mode=0o700)
+        evidence["directory"] = str(folder.resolve())
+    except Exception as exc:
+        evidence["errors"].append({"operation": "create_private_evidence_directory", "error": type(exc).__name__})
+        return evidence
+    try:
+        text = page.locator("body").inner_text(timeout=3000)
+        path = folder / "visible-page.txt"
+        path.write_text(text, encoding="utf-8")
+        path.chmod(0o600)
+        evidence["visible_text_path"] = str(path.resolve())
+        evidence["visible_text_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    except Exception as exc:
+        evidence["errors"].append({"operation": "capture_visible_text", "error": type(exc).__name__})
+    try:
+        path = folder / "page.png"
+        page.screenshot(path=str(path), full_page=True, timeout=5000)
+        path.chmod(0o600)
+        evidence["screenshot_path"] = str(path.resolve())
+        evidence["screenshot_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception as exc:
+        evidence["errors"].append({"operation": "capture_screenshot", "error": type(exc).__name__})
+    try:
+        path = folder / "evidence.json"
+        path.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+    except Exception as exc:
+        evidence["errors"].append({"operation": "persist_evidence_manifest", "error": type(exc).__name__})
+    return evidence
 
 
 def _blocked(page, adapter: dict) -> str | None:
@@ -134,16 +229,22 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
     adapter = _load_adapter(root, job.get("platform", ""))
     if not adapter:
         return _result("BLOCKED_BY_PLATFORM", reason="No enabled, audited browser adapter is configured for this platform")
-    target = job.get("application_url") or job.get("job_url", "")
+    target = job.get("application_url") or job.get("apply_url") or job.get("job_url", "")
     if not _allowed_url(target, adapter):
         return _result("BLOCKED_BY_PLATFORM", reason="Application URL is outside configured allowed hosts")
+    if not _job_url_allowed(job.get("job_url") or target, adapter) or not _job_url_allowed(target, adapter):
+        return _result("BLOCKED_BY_PLATFORM", reason="Job or application URL does not match the audited vacancy URLs")
     if not adapter.get("steps") or not adapter.get("confirmation", {}).get("locator"):
         return _result("FAILED", reason="Adapter requires application steps and a positive confirmation locator")
     pdf_path = Path(cv.get("pdf_path", ""))
     if not pdf_path.is_file() or pdf_path.suffix.lower() != ".pdf" or not pdf_path.read_bytes().startswith(b"%PDF-"):
         return _result("FAILED", reason="CV upload must be an existing validated PDF")
     pdf_bytes = pdf_path.read_bytes()
-    upload_evidence = {"path": str(pdf_path.resolve()), "sha256": hashlib.sha256(pdf_bytes).hexdigest(), "bytes": len(pdf_bytes)}
+    try:
+        filename = _upload_filename(cv, pdf_path)
+    except ValueError as exc:
+        return _result("FAILED", reason=str(exc))
+    upload_evidence = {"path": str(pdf_path.resolve()), "sha256": hashlib.sha256(pdf_bytes).hexdigest(), "bytes": len(pdf_bytes), "filename": filename}
     questions, answers, unknowns = [], [], []
     submitted = False
     operation = "launch_browser"
@@ -174,10 +275,14 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
             page.goto(target, wait_until="domcontentloaded")
             if reason := _blocked(page, adapter):
                 return _result("BLOCKED_BY_PLATFORM", reason=reason)
+            if reason := _identity_mismatch(page, adapter):
+                return _result("BLOCKED_BY_PLATFORM", reason=reason)
             if _positive_confirmation(page, adapter)[0]:
                 return _result("SUBMISSION_UNCONFIRMED", reason="Confirmation was already present on initial navigation; reconcile existing application before retry")
             for index, step in enumerate(adapter["steps"]):
                 if reason := _blocked(page, adapter):
+                    return _result("BLOCKED_BY_PLATFORM", reason=reason, questions=questions, answers=answers)
+                if reason := _identity_mismatch(page, adapter):
                     return _result("BLOCKED_BY_PLATFORM", reason=reason, questions=questions, answers=answers)
                 operation = f"step_{index}_ready"
                 if step.get("ready"):
@@ -190,7 +295,7 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
                         control = _locator(page, spec)
                         if control.count() != 1:
                             raise ValueError("Upload control must uniquely identify the CV field")
-                        control.set_input_files({"name": pdf_path.name, "mimeType": "application/pdf", "buffer": pdf_bytes})
+                        control.set_input_files({"name": filename, "mimeType": "application/pdf", "buffer": pdf_bytes})
                         _mark(control)
                         continue
                     resolution = resolve_question(root, question, profile, job, spec.get("context"))
@@ -233,6 +338,8 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
                     operation = f"step_{index}_next"
                     _locator(page, step["next"]).click()
                 else:
+                    if reason := _blocked(page, adapter) or _identity_mismatch(page, adapter):
+                        return _result("BLOCKED_BY_PLATFORM", reason=reason, questions=questions, answers=answers)
                     if not submit:
                         return _result("READY_TO_APPLY", questions=questions, answers=answers, upload_evidence=upload_evidence)
                     if not step.get("submit"):
@@ -246,20 +353,33 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
                     # From this point on, transport failures might hide a successful submission.
                     if before_submit is not None:
                         before_submit({"job_id": job.get("id"), "questions": questions, "answers": answers, "upload_evidence": upload_evidence})
+                    if reason := _blocked(page, adapter) or _identity_mismatch(page, adapter):
+                        return _result("FAILED", reason="Final click cancelled after durable intent: " + reason,
+                                       questions=questions, answers=answers, retryable=False)
                     submitted = True
-                    operation = "submit_click"
-                    submit_control.click()
-                    marker = _locator(page, adapter["confirmation"]["locator"])
-                    operation = "submission_confirmation"
-                    marker.wait_for(state="visible", timeout=adapter.get("confirmation_timeout_ms", 15000))
-                    confirmed, confirmation_id = _positive_confirmation(page, adapter)
-                    if confirmed:
-                        return _result("SUBMITTED", questions=questions, answers=answers,
-                                       confirmation_id=confirmation_id, confirmation_url=page.url, upload_evidence=upload_evidence,
-                                       submitted_at=datetime.now(timezone.utc).isoformat(),
-                                       confirmation_evidence={"marker_text": marker.inner_text().strip()[:2000], "url": page.url})
-                    return _result("SUBMISSION_UNCONFIRMED", reason="Submit attempted but configured positive confirmation was not detected",
-                                   questions=questions, answers=answers)
+                    try:
+                        operation = "submit_click"
+                        submit_control.click()
+                        marker = _locator(page, adapter["confirmation"]["locator"])
+                        operation = "submission_confirmation"
+                        marker.wait_for(state="visible", timeout=adapter.get("confirmation_timeout_ms", 15000))
+                        confirmed, confirmation_id = _positive_confirmation(page, adapter)
+                        browser_evidence = _capture_evidence(root, job, page)
+                        if confirmed:
+                            return _result("SUBMITTED", questions=questions, answers=answers,
+                                           confirmation_id=confirmation_id, confirmation_url=page.url, upload_evidence=upload_evidence,
+                                           submitted_at=datetime.now(timezone.utc).isoformat(), final_url=page.url,
+                                           browser_evidence=browser_evidence, evidence_capture_errors=browser_evidence["errors"],
+                                           confirmation_evidence={"marker_text": marker.inner_text().strip()[:2000], "url": page.url})
+                        return _result("SUBMISSION_UNCONFIRMED", reason="Submit attempted but configured positive confirmation was not detected",
+                                       questions=questions, answers=answers, final_url=page.url, upload_evidence=upload_evidence,
+                                       browser_evidence=browser_evidence, evidence_capture_errors=browser_evidence["errors"])
+                    except Exception as exc:
+                        browser_evidence = _capture_evidence(root, job, page)
+                        return _result("SUBMISSION_UNCONFIRMED", reason=f"{type(exc).__name__} during {operation}",
+                                       questions=questions, answers=answers, retryable=False, final_url=page.url,
+                                       upload_evidence=upload_evidence, browser_evidence=browser_evidence,
+                                       evidence_capture_errors=browser_evidence["errors"])
     except Exception as exc:
         # Exception text can contain DOM values or URL tokens; retain only a safe class/message.
         detail = str(exc) if isinstance(exc, ValueError) else f"{type(exc).__name__} during {operation}"

@@ -69,21 +69,29 @@ def _assert_evidence(profile: dict, root: Path | None = None) -> None:
                 if record.get("current") and not supported("Present", record["evidence"]):
                     raise CVError("Unsupported ongoing employment")
     if root is not None:
+        evidence_items = [e for items in profile["evidence"].values() for e in items]
+        evidence_items += [e for field in ("experience", "education", "projects", "certifications", "languages") for record in profile.get(field, []) for e in record.get("evidence", [])]
+        required_sources = {source for source in profile.get("source_ids", []) if str(source).startswith("sha256:")}
+        required_sources.update(item["source_id"] for item in evidence_items if item.get("source_id", "").startswith("sha256:"))
         manifest_file = root / "data/source-cv/manifest.json"
-        if any(str(source).startswith("sha256:") for source in profile.get("source_ids", [])) and not manifest_file.exists():
+        if required_sources and not manifest_file.exists():
             raise CVError("SOURCE_EVIDENCE_UNAVAILABLE: immutable source manifest required")
         if manifest_file.exists():
             manifest = json.loads(manifest_file.read_text())
+            if required_sources - {source["source_id"] for source in manifest["sources"]}:
+                raise CVError("SOURCE_EVIDENCE_UNAVAILABLE: canonical source is absent from the immutable manifest")
             source_texts = {}
             from .profile import load_source_extraction
             for source in manifest["sources"]:
                 archive = root / "data/source-cv" / source["archive_name"]
                 if not archive.exists() or hashlib.sha256(archive.read_bytes()).hexdigest() != source["sha256"]:
                     raise CVError("Immutable source CV checksum mismatch")
+                # An archived source can await transcription review without
+                # participating in any existing canonical candidate claim.
+                if source["source_id"] not in required_sources:
+                    continue
                 extraction = load_source_extraction(root, source)
                 source_texts[source["source_id"]] = _normalize_text(extraction["text"]) + " " + " ".join(u for p in extraction["pages"] for u in p["links"]).casefold()
-            evidence_items = [e for items in profile["evidence"].values() for e in items]
-            evidence_items += [e for field in ("experience", "education", "projects", "certifications", "languages") for record in profile.get(field, []) for e in record.get("evidence", [])]
             for item in evidence_items:
                 if item.get("source_id", "").startswith("sha256:"):
                     quote = _normalize_text(item.get("quote", ""))

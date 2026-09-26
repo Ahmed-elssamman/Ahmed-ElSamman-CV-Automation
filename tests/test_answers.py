@@ -263,3 +263,103 @@ def test_invalid_or_nonexact_profile_years_are_not_numeric_answers(tmp_path, pro
     profile['years_experience'] = value
     profile['evidence'] = {'/years_experience': _fixture_evidence(str(value))}
     assert resolve_question(tmp_path, 'Years of experience', profile, {})['status'] == 'UNKNOWN'
+
+
+def test_middle_name_uses_only_explicit_profile_field(tmp_path, profile):
+    profile['name'] = 'Fixture Middle Person'
+    assert resolve_question(tmp_path, 'Middle name', profile, {})['status'] == 'UNKNOWN'
+    profile['middle_name'] = 'ExplicitMiddle'
+    for question in ['Middle name', 'Your middle name?', 'Middle names']:
+        result = resolve_question(tmp_path, question, profile, {})
+        assert result['answer'] == 'ExplicitMiddle'
+        assert result['source'] == 'master_profile:/middle_name'
+
+
+def test_language_level_returns_exact_sourced_good_before_bank(tmp_path, profile):
+    profile['languages'] = [
+        {'name': 'English', 'proficiency': 'Good', 'evidence': _fixture_evidence('English: Good')},
+        {'name': 'Arabic', 'proficiency': None, 'evidence': _fixture_evidence('Arabic')},
+    ]
+    add_answer(tmp_path, 'English proficiency', 'Fluent', source='user:older-fixture')
+    for question in ['English Level', 'English proficiency', 'What is your level of English?', 'How would you rate your English?', 'English language level']:
+        result = resolve_question(tmp_path, question, profile, {})
+        assert result['answer'] == 'Good'
+        assert result['source'] == 'master_profile:/languages/0/proficiency'
+        assert result['evidence'][0]['quote'] == 'English: Good'
+    for question in ['Arabic Level', 'Are you fluent in English?', 'Do you speak English?', 'English CEFR level', 'Are you a native English speaker?']:
+        assert resolve_question(tmp_path, question, profile, {})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'English Level', profile, {}, {'language': 'Arabic'})['status'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('evidence', [
+    _fixture_evidence('English'),
+    [{'source_id': 'fixture', 'quote': 'English: Good', 'status': 'unverified_claim'}],
+    _fixture_evidence('English is not Good'),
+    _fixture_evidence('not Good English'),
+])
+def test_language_presence_or_unverified_level_is_insufficient(tmp_path, profile, evidence):
+    profile['languages'] = [{'name': 'English', 'proficiency': 'Good', 'evidence': evidence}]
+    assert resolve_question(tmp_path, 'English Level', profile, {})['status'] == 'UNKNOWN'
+
+
+def test_current_salary_known_amount_does_not_supply_unknown_units(tmp_path, profile):
+    profile['compensation'] = {'current_salary': {'amount': 35000, 'currency': None, 'period': None, 'basis': None, 'component': None}}
+    profile['evidence'] = {'/compensation/current_salary': _fixture_evidence('My current salary amount is 35000')}
+    context = {'currency': 'EGP', 'period': 'monthly', 'basis': 'net'}
+    job = {'country': 'Egypt', 'salary_range': {'max': 999999, **context}}
+    result = resolve_question(tmp_path, 'Current salary', profile, job, context)
+    assert result['status'] == 'UNKNOWN'
+    assert result['current_salary_amount'] == 35000
+    assert result['missing_profile_units'] == ['currency', 'period', 'basis']
+    assert 'amount is known' in result['event']['reason']
+    assert result['answer'] is None
+
+
+def _current_salary_profile(profile):
+    profile['compensation'] = {'current_salary': {'amount': 35000, 'currency': 'EGP', 'period': 'monthly', 'basis': 'net', 'component': None}}
+    profile['evidence'] = {'/compensation/current_salary': _fixture_evidence('My current salary is 35000 EGP net monthly')}
+    return profile
+
+
+def test_current_salary_profile_precedes_bank_and_ignores_expected_or_advertised_pay(tmp_path, profile):
+    _current_salary_profile(profile)
+    context = {'currency': 'EGP', 'period': 'monthly', 'basis': 'net'}
+    add_answer(tmp_path, 'Current salary', 20000, source='user:older-fixture', scope=context)
+    job = {'country': 'Egypt', 'salary_range': {'min': 50000, 'max': 999999, **context}}
+    result = resolve_question(tmp_path, 'What is your current salary?', profile, job, context)
+    assert result['answer'] == 35000
+    assert result['source'] == 'master_profile:/compensation/current_salary'
+    assert result['salary_source'] == result['source']
+    assert result['scope']['component'] is None
+    annual = resolve_question(tmp_path, 'Current compensation', profile, job, {**context, 'period': 'annual'})
+    assert annual['answer'] == 420000
+    assert annual['original_current_salary']['period'] == 'monthly'
+    profile['compensation']['current_salary'].update(amount=420000, period='annual')
+    assert resolve_question(tmp_path, 'Current salary', profile, job, context)['answer'] == 35000
+    assert resolve_question(tmp_path, 'Salary history', profile, job, context)['status'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('context', [
+    {'currency': 'EGP', 'period': 'monthly', 'basis': 'gross'},
+    {'currency': 'USD', 'period': 'monthly', 'basis': 'net'},
+    {'currency': 'EGP', 'period': 'monthly', 'basis': 'net', 'component': 'base'},
+    {'currency': 'EGP', 'period': 'weekly', 'basis': 'net'},
+    {'currency': 'EGP', 'period': 'monthly'},
+])
+def test_current_salary_incompatible_or_missing_form_units_are_unknown(tmp_path, profile, context):
+    _current_salary_profile(profile)
+    result = resolve_question(tmp_path, 'Current salary', profile, {}, context)
+    assert result['status'] == 'UNKNOWN'
+    assert result['current_salary_amount'] == 35000
+
+
+def test_current_salary_requires_amount_provenance_but_can_use_approved_scoped_bank(tmp_path, profile):
+    _current_salary_profile(profile)
+    profile['evidence'] = {'/compensation/current_salary/currency': _fixture_evidence('The currency is EGP')}
+    context = {'currency': 'EGP', 'period': 'monthly', 'basis': 'net'}
+    assert resolve_question(tmp_path, 'Current salary', profile, {}, context)['status'] == 'UNKNOWN'
+    add_answer(tmp_path, 'Current salary', 35000, source='user:explicit-fixture', scope=context)
+    result = resolve_question(tmp_path, 'Current salary', profile, {}, context)
+    assert result['answer'] == 35000
+    assert result['source'] == 'user:explicit-fixture'
+    assert resolve_question(tmp_path, 'Current salary', profile, {}, {**context, 'basis': 'gross'})['status'] == 'UNKNOWN'

@@ -4,6 +4,11 @@ platforms:
   audited-company-form:
     enabled: false
     allowed_hosts: [careers.example.com]
+    allowed_job_urls: [https://careers.example.com/jobs/EXAMPLE-ID]
+    identity_checks:
+      - locator: {selector: 'input[name="job_id"]'}
+        attribute: value
+        expected: EXAMPLE-ID
     headless: true
     timeout_ms: 15000
     confirmation_timeout_ms: 20000

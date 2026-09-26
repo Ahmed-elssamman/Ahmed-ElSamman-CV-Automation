@@ -71,10 +71,28 @@ def test_complete_fixture_pipeline_and_duplicate_prevention(pipeline):
         for filename in ('application.json', 'job-description.txt', 'company-research.md', 'ats-analysis.json', 'cv.tex', 'cv.pdf', 'application-questions.json', 'submission-intent.json', 'application-result.json', 'sha256-manifest.json', 'logs/application-events.json'):
             assert (snapshot / filename).is_file(), filename
         assert hashlib.sha256((snapshot / 'cv.pdf').read_bytes()).hexdigest() == app['upload_evidence']['sha256']
+        receipt = app['browser_evidence']
+        assert receipt['archive_status'] == 'ARCHIVED'
+        assert not app['browser_evidence_archive_errors']
+        assert (snapshot / 'browser-evidence/evidence.json').is_file()
+        for path_key, hash_key in [('visible_text_path', 'visible_text_sha256'), ('screenshot_path', 'screenshot_sha256')]:
+            archived = Path(receipt[path_key])
+            original = Path(receipt['original_capture'][path_key])
+            assert archived.is_relative_to(snapshot / 'browser-evidence')
+            assert original.is_relative_to(root / 'data/browser-evidence')
+            assert archived.read_bytes() == original.read_bytes()
+            assert hashlib.sha256(archived.read_bytes()).hexdigest() == receipt[hash_key]
         manifest = json.loads((snapshot / 'sha256-manifest.json').read_text())
         assert all(hashlib.sha256((snapshot / path).read_bytes()).hexdigest() == digest for path, digest in manifest.items())
         events = [row[0] for row in runner.store.db.execute('SELECT event_type FROM application_events WHERE application_id=? ORDER BY seq', (app['application_id'],))]
         assert events.index('SUBMISSION_INTENT') < events.index('SUBMITTED')
+        assert events.count('SUBMITTED') == 1
+        assert events.index('SUBMITTED') < events.index('APPLICATION_ARCHIVE_UPDATED')
+        from workai.store import StateError
+        for protected in ['confirmation_id', 'confirmation_url', 'submitted_at', 'application_status', 'status']:
+            with pytest.raises(StateError, match='protected'):
+                runner.store.update_application_archive(app['application_id'], {protected: 'altered'})
+        assert runner.store.application(app['application_id'])['confirmation_id'] == 'FIXTURE-123'
         runner.run(discover=False, submit=True)
         assert state['submissions'] == 1
         dashboard = report(root)
@@ -152,5 +170,141 @@ def test_revised_expired_job_is_not_submitted_from_stale_preparation(pipeline):
         current = runner.store.application_for_job(stored['id'])
         assert current['application_status'] in {'EXCLUDED', 'FAILED'}
         assert any('deadline' in reason.casefold() for reason in current.get('eligibility', {}).get('reasons', [])), current
+    finally:
+        runner.close()
+
+
+def test_corrupt_receipt_is_rejected_without_losing_confirmed_submission(pipeline, monkeypatch):
+    import workai.browser as browser
+    root, job, profile, adapter, state = pipeline
+    real_apply = browser.apply_job
+    def corrupt_after_confirmation(*args, **kwargs):
+        outcome = real_apply(*args, **kwargs)
+        assert outcome['status'] == 'SUBMITTED'
+        # Simulate capture damage after the browser recorded its original hash.
+        Path(outcome['browser_evidence']['screenshot_path']).write_bytes(b'fixture damaged receipt')
+        return outcome
+    monkeypatch.setattr(browser, 'apply_job', corrupt_after_confirmation)
+    runner = Orchestrator(root)
+    try:
+        stored, _ = runner.store.upsert_job(job)
+        result = runner.run(discover=False, submit=True)
+        assert result['counts'] == {'SUBMITTED': 1}, result
+        app = runner.store.application_for_job(stored['id'])
+        assert app['application_status'] == 'SUBMITTED'
+        assert app['confirmation_id'] == 'FIXTURE-123'
+        assert app['browser_evidence']['archive_status'] == 'PARTIAL'
+        assert any(error['error'] == 'CAPTURE_INTEGRITY_MISMATCH' for error in app['browser_evidence_archive_errors'])
+        snapshot = Path(app['snapshot_path'])
+        assert (snapshot / 'browser-evidence/visible-page.txt').is_file()
+        assert not (snapshot / 'browser-evidence/page.png').exists()
+        assert 'screenshot_path' not in app['browser_evidence']
+        assert Path(app['browser_evidence']['original_capture']['screenshot_path']).exists()
+        result_file = json.loads((snapshot / 'application-result.json').read_text())
+        assert result_file['status'] == 'SUBMITTED'
+        assert result_file['browser_evidence_archive_errors']
+        events = [row[0] for row in runner.store.db.execute('SELECT event_type FROM application_events WHERE application_id=? ORDER BY seq', (app['application_id'],))]
+        assert events.index('SUBMITTED') < events.index('BROWSER_EVIDENCE_ARCHIVE_ERROR')
+        assert events.count('SUBMITTED') == 1
+        assert 'APPLICATION_ARCHIVE_UPDATED' in events
+        runner.run(discover=False, submit=True)
+        assert state['submissions'] == 1
+    finally:
+        runner.close()
+
+
+def test_snapshot_sealing_failure_does_not_demote_or_repeat_confirmed_submission(pipeline, monkeypatch):
+    root, job, profile, adapter, state = pipeline
+    runner = Orchestrator(root)
+    def unavailable(*_):
+        raise OSError('Fixture archive disk unavailable')
+    monkeypatch.setattr(runner, 'finalize_snapshot', unavailable)
+    try:
+        stored, _ = runner.store.upsert_job(job)
+        result = runner.run(discover=False, submit=True)
+        assert result['counts'] == {'SUBMITTED': 1}, result
+        app = runner.store.application_for_job(stored['id'])
+        assert app['application_status'] == 'SUBMITTED'
+        assert app['snapshot_archival_status'] == 'INCOMPLETE'
+        assert runner.store.db.execute("SELECT COUNT(*) FROM application_events WHERE application_id=? AND event_type='SUBMITTED'", (app['application_id'],)).fetchone()[0] == 1
+        assert runner.store.db.execute("SELECT COUNT(*) FROM application_events WHERE application_id=? AND event_type='APPLICATION_ARCHIVE_UPDATED'", (app['application_id'],)).fetchone()[0] >= 1
+        assert app['retryable'] is False
+        assert app['confirmation_id'] == 'FIXTURE-123'
+        assert any(error.get('operation') == 'post_submission_archival' for error in app['browser_evidence_archive_errors'])
+        assert Path(app['browser_evidence']['screenshot_path']).is_file()
+        runner.run(discover=False, submit=True)
+        assert state['submissions'] == 1
+    finally:
+        runner.close()
+
+
+def test_sealed_snapshot_cannot_be_rewritten_or_extended(tmp_path):
+    root = tmp_path
+    runner = Orchestrator(root)
+    folder = root / 'applications/fixture/attempt'
+    folder.mkdir(parents=True)
+    manifest = folder / 'sha256-manifest.json'
+    manifest.write_text('{}\n')
+    before = manifest.read_bytes()
+    try:
+        with pytest.raises(ValueError, match='sealed'):
+            runner.archive_browser_evidence(folder, {'browser_evidence': {}})
+        with pytest.raises(ValueError, match='sealed'):
+            runner.finalize_snapshot(folder, {'status': 'SUBMITTED'})
+        assert manifest.read_bytes() == before
+        assert not (folder / 'application-result.json').exists()
+        assert not (folder / 'browser-evidence').exists()
+    finally:
+        runner.close()
+
+
+def test_uncertain_submission_keeps_receipt_inside_reconciliation_snapshot(pipeline):
+    root, job, profile, adapter, state = pipeline
+    state['html'] = state['html'].replace('Application received. Reference:', 'Processing; receipt pending. Reference:')
+    runner = Orchestrator(root)
+    try:
+        stored, _ = runner.store.upsert_job(job)
+        result = runner.run(discover=False, submit=True)
+        assert result['counts'] == {'RECONCILIATION_REQUIRED': 1}, result
+        app = runner.store.application_for_job(stored['id'])
+        snapshot = Path(app['snapshot_path'])
+        receipt = app['browser_evidence']
+        assert receipt['archive_status'] == 'ARCHIVED'
+        assert Path(receipt['visible_text_path']).is_relative_to(snapshot)
+        assert 'Processing; receipt pending' in Path(receipt['visible_text_path']).read_text()
+        assert Path(receipt['screenshot_path']).is_relative_to(snapshot)
+        assert (snapshot / 'sha256-manifest.json').exists()
+        runner.run(discover=False, submit=True)
+        assert state['submissions'] == 1
+    finally:
+        runner.close()
+
+
+def test_question_persistence_failure_after_confirmation_preserves_submitted_state(pipeline, monkeypatch):
+    root, job, profile, adapter, state = pipeline
+    runner = Orchestrator(root)
+    real_record = runner.store.record_questions
+    calls = []
+    def fail_after_browser_confirmation(*args, **kwargs):
+        calls.append(1)
+        if len(calls) > 1:
+            raise OSError('Fixture question persistence unavailable after confirmation')
+        return real_record(*args, **kwargs)
+    monkeypatch.setattr(runner.store, 'record_questions', fail_after_browser_confirmation)
+    try:
+        stored, _ = runner.store.upsert_job(job)
+        result = runner.run(discover=False, submit=True)
+        assert result['counts'] == {'SUBMITTED': 1}, result
+        app = runner.store.application_for_job(stored['id'])
+        assert app['application_status'] == 'SUBMITTED'
+        assert app['confirmation_id'] == 'FIXTURE-123'
+        assert app['snapshot_archival_status'] == 'INCOMPLETE'
+        assert runner.store.db.execute("SELECT COUNT(*) FROM application_events WHERE application_id=? AND event_type='SUBMITTED'", (app['application_id'],)).fetchone()[0] == 1
+        assert runner.store.db.execute("SELECT COUNT(*) FROM application_events WHERE application_id=? AND event_type='APPLICATION_ARCHIVE_UPDATED'", (app['application_id'],)).fetchone()[0] >= 1
+        assert app['retryable'] is False
+        assert Path(app['browser_evidence']['screenshot_path']).is_file()
+        assert app['browser_evidence_archive_errors']
+        runner.run(discover=False, submit=True)
+        assert state['submissions'] == 1
     finally:
         runner.close()

@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -13,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .security import AuditLogger, redact, utcnow, write_json
-from .store import Store, TERMINAL, stable_id
+from .store import APPLICATION_ARCHIVE_FIELDS, Store, TERMINAL, stable_id
 
 
 @contextmanager
@@ -44,7 +45,7 @@ def _fingerprint_files(root: Path) -> str:
             else:
                 digest.update(path.read_bytes())
     # Analyzer/answer/QA fixes must invalidate a previously unsafe classification.
-    for module in ("jobs.py", "answers.py", "cv.py", "orchestrator.py", "browser.py", "reasoning.py"):
+    for module in ("jobs.py", "answers.py", "cover.py", "cv.py", "orchestrator.py", "browser.py", "reasoning.py"):
         digest.update((Path(__file__).parent / module).read_bytes())
     from .reasoning import settings
     ai = settings(root)
@@ -57,7 +58,7 @@ def profile_fingerprint(profile: dict) -> str:
 
 
 def job_fingerprint(job: dict) -> str:
-    fields = ("company", "position", "description", "job_url", "application_url", "platform", "country", "city", "remote",
+    fields = ("company", "position", "description", "job_url", "application_url", "apply_url", "platform", "country", "city", "remote",
               "remote_from_egypt", "employment_type", "seniority", "required_skills", "preferred_skills", "min_years_experience",
               "salary_range", "application_deadline", "application_questions", "work_authorization_required", "status")
     return hashlib.sha256(json.dumps({key: job.get(key) for key in fields}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -261,6 +262,10 @@ class Orchestrator:
 
             cv = {**app["cv"], "tex_path": str(snapshot / "cv.tex"), "pdf_path": str(snapshot / "cv.pdf")}
             outcome = self.operation("Application Agent", "apply", job, apply_job, self.root, job, profile, cv, submit=True, before_submit=before_submit)
+            if outcome.get("status") == "SUBMITTED":
+                # The external fact must survive any subsequent local archival failure.
+                outcome.setdefault("submitted_at", utcnow())
+                self.store.transition(app_id, "SUBMITTED", outcome)
             records = question_records(outcome)
             self.store.record_questions(app_id, records)
             for unknown in outcome.get("unknown_events", []):
@@ -277,11 +282,30 @@ class Orchestrator:
                 outcome.setdefault("submitted_at", utcnow())
             outcome.update(application_questions=[r.get("question") for r in records], application_answers=records,
                            knowledge_fingerprint=_fingerprint_files(self.root))
+            outcome = self.archive_browser_evidence(snapshot, outcome)
+            if outcome.get("browser_evidence_archive_errors"):
+                self.store.event("BROWSER_EVIDENCE_ARCHIVE_ERROR", {"errors": outcome["browser_evidence_archive_errors"]},
+                                 application_id=app_id, job_id=job["id"])
+            if status == "SUBMITTED":
+                app = self.store.update_application_archive(app_id, {key: value for key, value in outcome.items() if key in APPLICATION_ARCHIVE_FIELDS})
             self.finalize_snapshot(snapshot, outcome)
-            app = self.store.transition(app_id, status, outcome)
-            return {"job_id": job["id"], "application_id": app_id, "status": app["application_status"], "failure_reason": outcome.get("failure_reason"), "snapshot_path": str(snapshot)}
+            if status != "SUBMITTED":
+                app = self.store.transition(app_id, status, outcome)
+            return {"job_id": job["id"], "application_id": app_id, "status": app["application_status"], "failure_reason": outcome.get("failure_reason"),
+                    "snapshot_path": str(snapshot), "browser_evidence_archive_errors": outcome.get("browser_evidence_archive_errors", [])}
         except Exception as error:
             latest = self.store.application(app_id)
+            if latest["application_status"] == "SUBMITTED":
+                # A receipt is an external fact; copying/sealing failures cannot undo it.
+                archive_error = {"operation": "post_submission_archival", "error": redact(str(error)), "retryable": False}
+                errors = latest.get("browser_evidence_archive_errors", []) + [archive_error]
+                self.store.update_application_archive(app_id, {
+                    "retryable": False, "browser_evidence_archive_errors": errors, "snapshot_archival_status": "INCOMPLETE"})
+                self.store.event("APPLICATION_ARCHIVE_FAILED", archive_error, application_id=app_id, job_id=job["id"])
+                self.logger.emit("Recovery Agent", "archive_after_submission", "SUBMITTED", job=job, error=error,
+                                 resolution="Preserve confirmed submission; repair local archive without resubmitting")
+                return {"job_id": job["id"], "application_id": app_id, "status": "SUBMITTED", "snapshot_path": str(snapshot),
+                        "browser_evidence_archive_errors": errors, "snapshot_archival_status": "INCOMPLETE", "retryable": False}
             ambiguous = latest["application_status"] in {"APPLICATION_STARTED", "SUBMISSION_INTENT"}
             failed = {"failure_reason": redact(str(error)), "retryable": not ambiguous, "last_attempt": utcnow(), "knowledge_fingerprint": fingerprint}
             status = "RECONCILIATION_REQUIRED" if ambiguous else "FAILED"
@@ -307,7 +331,74 @@ class Orchestrator:
         (folder / "logs").mkdir()
         return folder
 
+    def archive_browser_evidence(self, folder: Path, result: dict) -> dict:
+        """Copy verified receipt bytes into a new attempt, retaining original captures.
+
+        Failures are evidence-quality findings, never a reason to resubmit an
+        already confirmed application. Only the browser's two declared artifacts
+        are copied; no headers, cookies, browser state or arbitrary files.
+        """
+        if (folder / "sha256-manifest.json").exists():
+            raise ValueError("Cannot add evidence to an already sealed application snapshot")
+        capture = result.get("browser_evidence")
+        if not isinstance(capture, dict):
+            return result
+        archived = {key: value for key, value in capture.items()
+                    if key not in {"directory", "visible_text_path", "screenshot_path", "visible_text_sha256", "screenshot_sha256"}}
+        archived.update(original_capture=dict(capture), archive_status="FAILED", artifacts={})
+        errors = []
+        destination = folder / "browser-evidence"
+        try:
+            destination.mkdir(mode=0o700, exist_ok=False)
+            archived["directory"] = str(destination.resolve())
+            base = (self.root / "data" / "browser-evidence").resolve()
+            source_directory = Path(capture.get("directory", "")).resolve(strict=True)
+            if not source_directory.is_relative_to(base) or source_directory == base:
+                raise ValueError("Receipt source directory is outside private browser capture storage")
+            for kind, path_key, hash_key, filename in (
+                    ("visible_text", "visible_text_path", "visible_text_sha256", "visible-page.txt"),
+                    ("screenshot", "screenshot_path", "screenshot_sha256", "page.png")):
+                if not capture.get(path_key):
+                    errors.append({"artifact": kind, "error": "CAPTURE_ARTIFACT_MISSING"})
+                    continue
+                expected = capture.get(hash_key)
+                if not isinstance(expected, str) or not re.fullmatch(r"[a-fA-F0-9]{64}", expected):
+                    errors.append({"artifact": kind, "error": "CAPTURE_HASH_MISSING_OR_INVALID"})
+                    continue
+                try:
+                    source = Path(capture[path_key])
+                    if source.is_symlink() or source.resolve(strict=True).parent != source_directory:
+                        raise ValueError("Receipt artifact is not a regular direct capture file")
+                    # One read binds the verified hash and copied content against source changes.
+                    content = source.read_bytes()
+                    actual = hashlib.sha256(content).hexdigest()
+                    if actual != expected.lower():
+                        errors.append({"artifact": kind, "error": "CAPTURE_INTEGRITY_MISMATCH",
+                                       "expected_sha256": expected, "actual_sha256": actual})
+                        continue
+                    target = destination / filename
+                    with target.open("xb") as handle:
+                        target.chmod(0o600)
+                        handle.write(content)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    archived[path_key] = str(target.resolve())
+                    archived[hash_key] = actual
+                    archived["artifacts"][kind] = {"path": str(target.resolve()), "relative_path": str(target.relative_to(folder)),
+                                                  "sha256": actual, "source_path": str(source.resolve()), "bytes": len(content)}
+                except Exception as error:
+                    errors.append({"artifact": kind, "error": type(error).__name__, "reason": redact(str(error))})
+            archived["archive_status"] = "PARTIAL" if errors and archived["artifacts"] else "FAILED" if errors else "ARCHIVED"
+            archived["archive_errors"] = errors
+            write_json(destination / "evidence.json", archived)
+        except Exception as error:
+            errors.append({"operation": "archive_browser_evidence", "error": type(error).__name__, "reason": redact(str(error))})
+            archived["archive_status"] = "PARTIAL" if archived["artifacts"] else "FAILED"
+        return {**result, "browser_evidence": archived, "browser_evidence_archive_errors": errors}
+
     def finalize_snapshot(self, folder: Path, result: dict):
+        if (folder / "sha256-manifest.json").exists():
+            raise ValueError("Cannot modify an already sealed application snapshot")
         write_json(folder / "application-result.json", result)
         events = [dict(row) for row in self.store.db.execute(
             "SELECT seq,event_type,data,timestamp FROM application_events WHERE application_id=? ORDER BY seq",
