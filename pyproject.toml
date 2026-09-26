@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "workai"
+version = "0.1.0"
+description = "Truthful, auditable job application operating system"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6,<7", "httpx>=0.28,<1", "beautifulsoup4>=4.12,<5", "Jinja2>=3.1,<4", "pypdf>=6,<7", "playwright>=1.50,<2"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+workai = "workai.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["workai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

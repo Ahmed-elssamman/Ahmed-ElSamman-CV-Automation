@@ -1,0 +1,38 @@
+# Copy to config/platforms.yaml after auditing the actual form. Never put credentials here.
+# A platform is unsupported until its selectors and positive confirmation are verified.
+platforms:
+  audited-company-form:
+    enabled: false
+    allowed_hosts: [careers.example.com]
+    headless: true
+    timeout_ms: 15000
+    confirmation_timeout_ms: 20000
+    # storage_state: data/browser-sessions/company.json
+    blocking_selectors: ['[data-testid="login-required"]']
+    steps:
+      - ready: {label: Full name}
+        fields:
+          - {label: Full name, question: Full name, type: text}
+          - {label: Email, question: Email address, type: email}
+          - {label: Phone, question: Phone number, type: tel}
+          - {label: Resume, type: file}
+        next: {role: button, name: Continue}
+      - ready: {label: Country of residence}
+        fields:
+          - {label: Country of residence, question: Current country, type: select}
+          - label: Expected salary
+            question: Expected salary
+            type: number
+            context: {currency: EGP, period: monthly, basis: gross, component: base}
+          - question: Do you require sponsorship
+            type: radio
+            context: {country: Egypt}
+            options:
+              'True': {label: 'Yes'}
+              'False': {label: 'No'}
+        submit: {role: button, name: Submit application}
+    confirmation:
+      locator: {test_id: application-confirmation}
+      text_pattern: 'Application received'
+      id_pattern: 'Reference: ([A-Z0-9-]+)'
+      url_pattern: '/confirmation'

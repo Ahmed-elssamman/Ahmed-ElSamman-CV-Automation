@@ -1,0 +1,43 @@
+# Job discovery and matching
+
+The discovery agent reads `config/discovery.yaml`, queries public APIs sequentially, and saves an immutable `data/discovery/<UTC-run-id>/jobs.json` plus a per-source report. A failed or restricted source does not block the other sources. These files contain actual retrieved listings, never test fixtures. Unit tests use separately defined fixtures.
+
+## Implemented adapters
+
+| Adapter | Read-only endpoint / input | Coverage and limits |
+| --- | --- | --- |
+| Greenhouse | `boards-api.greenhouse.io/v1/boards/<board>/jobs?content=true` | Employer's current public board and full descriptions. Default employers: Careem, Canonical, Tamara. |
+| Lever | `api.lever.co/v0/postings/<board>?mode=json` | Employer's current public postings and application links. Default employer: Bosta. |
+| Remotive | `remotive.com/api/remote-jobs?category=software-dev&limit=100` | Public remote board; attribution and original URL retained. API may return other categories, so titles are checked locally. Employer location restrictions are preserved. |
+| SmartRecruiters | `api.smartrecruiters.com/v1/companies/<board>/postings` and individual detail endpoints | Full public descriptions for target software titles in first 100 results. Optional country filter. Default employers: Delivery Hero (Egypt), Nile Bits. Talabat optional board returned no postings during initial inspection. |
+| JSON-LD | User-configured public career page with `JobPosting` structured data | Reads that page only; follows no unbounded crawl and executes no JavaScript. Add `{type: jsonld, url: 'https://company.example/careers/vacancy', company: 'Name'}`. |
+
+These APIs expose vacancies, not permission or credentials to submit through employer APIs. Browser adapters have separate support and confirmation requirements. There is no claim of comprehensive coverage of Egypt or the Gulf: adding employer boards and permitted direct pages broadens coverage.
+
+LinkedIn, Wuzzuf, Indeed, Bayt, GulfTalent, Naukrigulf, Akhtaboot and Forasna are explicitly **not implemented for autonomous discovery**. Their configuration entries are disabled `manual_session` records. Enabling one records `BLOCKED_BY_PLATFORM` with `MANUAL_SESSION_REQUIRED`, then continues; it does not scrape or bypass access controls. Workable widget probes returned HTTP 403 during implementation, so no Workable adapter is advertised. A configured company board that returns no jobs is reported as zero, not as a success finding suitable vacancies.
+
+On September 26, 2026, normal public HTTP requests to Wuzzuf's Angular search and Bayt's Egypt Angular search returned HTTP 403; the Naukrigulf Egypt Angular request timed out. Those probes were stopped and recorded under `data/discovery/*-regional-source-probes.json`. There is no claim that these sites were successfully searched. The supplementary Jobicy API probe returned public listings but added no suitable role beyond the already discovered Canonical frontend vacancy; it is preserved as a source probe and is not advertised as an implemented recurring adapter.
+
+## Field handling and truthfulness
+
+Publisher posting dates retain their original precision and timezone. Greenhouse `updated_at` is never relabeled as a posting date. Discovery time is UTC retrieval time. Unknown countries, compensation units, currencies, remote residence rules and legal facts remain `null`. A foreign remote position does not imply permission to work from Egypt. Worldwide positions explicitly permit geographic coverage, while actual application questions may still reveal legal restrictions.
+
+Description parsing separates required, preferred, responsibility, domain, education, experience and soft-skill keywords. It retains the complete original description and source URL. Parsing is deterministic and deliberately conservative; it cannot fully interpret every natural-language qualification. A known explicit `React or Flutter` alternative is satisfied by either skill. A mandatory skill absent from the verified profile is an exclusion; preferred gaps are reported without becoming candidate facts. User and CV evidence remain authoritative.
+
+Salary values include `min`, `max`, `currency`, `period`, `basis`, `source_text`, and `applicable_countries` when a jurisdiction is stated. Bare `$` is ambiguous and does not become USD. An amount without a period never silently becomes monthly. US-only salary disclosures must not be used as an Egypt salary expectation.
+
+Experience duration counts completed, non-overlapping employment months. An unknown month/date cannot be invented, and total employment duration does not establish years using a particular technology. Explicit skill-specific durations remain unknown unless `experience_years_by_skill` carries verified values. Degree equivalence, language proficiency, travel, relocation and work authorization are not inferred from a country or a technology list.
+
+The approved September 26 clarification records authorization in Egypt and conditional willingness to relocate to Gulf countries. `legal.work_authorization` is consulted before requesting an already known legal fact. Gulf on-site eligibility needs employer evidence of visa/work-permit support and relocation support adequate for the candidate's conditions; candidate willingness alone does not establish that an employer provides those benefits. The normalized job can carry sourced `visa_sponsorship`, `work_permit_support`, `relocation_support`, and verified `relocation_support_adequate` values. Missing employer evidence stays unknown, while explicit refusal of required sponsorship/support excludes the role. Candidate willingness to work remotely from Egypt is distinct from employer permission to hire residents of Egypt.
+
+## Eligibility and ATS scores
+
+`assess_eligibility` returns `eligible`, `reasons` (known exclusions), `unknowns` (facts still needed), and `status`. Egypt/Gulf geography, role family, seniority, explicitly required technologies, experience, closed deadlines, remote residence and applicable legal requirements are independently checked. An ATS score never overrides an eligibility restriction.
+
+Generic `Software Engineer` titles require actual frontend/full-stack or JavaScript/Node ecosystem requirements or implementation responsibilities. Backend Python/Golang services that merely serve frontend clients do not meet that rule. Required-section headings such as `Who you are`, Ubuntu/Linux familiarity, mandatory travel and exceptional academic-performance statements are included in assessment. Analyzer version `2026.09.26.2` is recorded with provenance; stale ATS/eligibility input is reanalyzed, and obsolete inferred requirements are replaced while explicitly declared source requirements are retained. Source snapshots and earlier assessments remain immutable for auditing.
+
+The ATS score is a weighted deterministic measure of text alignment: required skills 35%, experience 20%, responsibilities 15%, keyword coverage 20%, education 5%, domain 5%. Unknown components are omitted and remaining weights are renormalized. Degree equivalence currently stays unknown instead of earning a fabricated score. The score is **not an interview or hiring probability**. Original weights, evaluated components, limitations, matched keywords and missing keywords accompany every score.
+
+Company research records facts attributed to the job source and optionally retrieves the configured official website title. Marketing statements are labeled unverified claims. It does not infer company size, interview process, salaries or platform policies. History is append-only under a stable company ID; employer name variants may still require a verified alias mapping.
+
+Public fetches are bounded by time and response size, reject credentials/non-HTTP schemes/private network targets, and revalidate redirects. Job HTML, JavaScript and embedded instructions are never executed. CAPTCHA, authentication failures, HTTP 403 and rate limits are recorded; no bypass is attempted.

@@ -1,0 +1,51 @@
+# Public employer APIs; add employer board slugs and permitted career URLs here.
+# Sources with enabled: false are honestly recorded capabilities, not live adapters.
+target_countries: [Egypt, Saudi Arabia, United Arab Emirates, Qatar, Kuwait, Bahrain, Oman]
+sources:
+  - name: Bosta careers
+    type: lever
+    board: Bosta
+    company: Bosta
+    company_url: https://bosta.co/
+  - name: Careem careers
+    type: greenhouse
+    board: careem
+    company: Careem
+    company_url: https://www.careem.com/
+  - name: Remotive public remote jobs
+    type: remotive
+  - name: Canonical globally remote careers
+    type: greenhouse
+    board: canonical
+    company: Canonical
+    company_url: https://canonical.com/
+  - name: Tamara Gulf careers
+    type: greenhouse
+    board: tamara
+    company: Tamara
+    company_url: https://tamara.co/
+  - name: Delivery Hero Egypt careers
+    type: smartrecruiters
+    board: DeliveryHero
+    company: Delivery Hero
+    company_url: https://www.deliveryhero.com/
+    country: eg
+  - name: Nile Bits Egypt careers
+    type: smartrecruiters
+    board: NileBits
+    company: Nile Bits
+    company_url: https://www.nilebits.com/
+  - name: Talabat careers (optional public SmartRecruiters API)
+    type: smartrecruiters
+    board: talabat
+    company: Talabat
+    company_url: https://www.talabat.com/
+    enabled: false
+  - {name: LinkedIn, type: manual_session, enabled: false}
+  - {name: Wuzzuf, type: manual_session, enabled: false}
+  - {name: Indeed, type: manual_session, enabled: false}
+  - {name: Bayt, type: manual_session, enabled: false}
+  - {name: GulfTalent, type: manual_session, enabled: false}
+  - {name: Naukrigulf, type: manual_session, enabled: false}
+  - {name: Akhtaboot, type: manual_session, enabled: false}
+  - {name: Forasna, type: manual_session, enabled: false}
