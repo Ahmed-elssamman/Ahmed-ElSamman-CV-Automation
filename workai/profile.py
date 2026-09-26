@@ -175,6 +175,10 @@ def normalize_profile(extraction: dict, source_id: str) -> dict:
     email_match = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", header)
     phone_match = re.search(r"\+\d[\d ]{8,18}\d", header)
     source_name = _clean(sections["HEADER"].strip().splitlines()[0])
+    # This workspace belongs to the explicitly named candidate. A different CV
+    # identity must never be relabelled with the configured name and merged.
+    if re.sub(r"[\W_]+", "", source_name.casefold()) != "ahmedelsamman":
+        raise ProfileError("CANDIDATE_IDENTITY_REVIEW_REQUIRED: source name differs from the approved candidate; verify identity before importing any facts")
     location = re.search(r"\b(Cairo),\s*(Egypt)\b", header, re.I)
     contact = {
         "email": email_match.group() if email_match else None,

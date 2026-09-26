@@ -163,6 +163,13 @@ def extraction(text=SAMPLE_TEXT):
     return {'text': text, 'pages': [{'page': 1, 'text': text, 'links': []}]}
 
 
+def test_other_candidate_cannot_be_relabelled_and_merged():
+    with pytest.raises(ProfileError, match='CANDIDATE_IDENTITY_REVIEW_REQUIRED'):
+        normalize_profile(extraction(SAMPLE_TEXT.replace('Ahmed ELsamman', 'Another Candidate')), 'sha256:other-person')
+    profile = normalize_profile(extraction(SAMPLE_TEXT.replace('Ahmed ELsamman', 'Ahmed El-Samman')), 'sha256:name-format')
+    assert profile['source_name'] == 'Ahmed El-Samman'
+
+
 def test_alternate_heading_stacked_role_and_skill_layout():
     text = SAMPLE_TEXT.replace('SUMMARY', 'Professional Summary:').replace('EXPERIENCE', 'Work Experience:')
     text = text.replace('EDUCATION', 'Academic Background:').replace('SKILLS', 'Technical Skills:')

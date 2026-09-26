@@ -2,7 +2,7 @@
 
 `workai ingest first.pdf second.pdf` accepts one or two original PDFs. Archives,
 source SHA-256 hashes, page text and annotation URLs live under `data/source-cv/`.
-Original input files are never modified. Duplicate bytes reuse the existing
+Original input files are never modified. This candidate-specific workspace accepts only the explicitly approved Ahmed El-Samman name (ignoring case, spacing and punctuation). A different name requires identity review before any professional facts are normalized; it cannot be silently relabelled as Ahmed. Duplicate bytes reuse the existing
 archive, even under another filename. At most two distinct source PDFs may be
 archived; a third fails before any new archive is written. Prior legacy duplicate
 archives remain untouched.
