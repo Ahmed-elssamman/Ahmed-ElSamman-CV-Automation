@@ -82,6 +82,30 @@ def test_required_missing_skill_excludes(profile):
     assert result["missing_required_skills"] == ["Docker"]
 
 
+def test_labelled_employer_experience_does_not_hide_minimum(profile):
+    job = make_job(description="Requirements\nAngular required.\nPreferred\nDocker is a plus.\nExperience needed: 5 years.")
+    parsed = jobs.analyze_job(job)
+    assert parsed["min_years_experience"] == 5
+    assert not jobs.assess_eligibility(parsed, profile)["eligible"]
+    # Structured metadata cannot weaken the full description's explicit minimum.
+    job = make_job(min_years_experience=1, description="Requirements\n5+ years of software development experience.\nAngular required.")
+    assert jobs.analyze_job(job)["min_years_experience"] == 5
+
+
+def test_preferred_years_remain_optional(profile):
+    job = make_job(description="Requirements\nAngular required.\nPreferred\n5 years of software development experience.")
+    assert jobs.analyze_job(job)["min_years_experience"] is None
+
+
+def test_academic_alternatives_and_database_replication(profile):
+    job = make_job(description="Requirements\nAngular required.\nBachelor's or Master's degree in Computer Science or related Engineering.\nResponsibilities\nMaintain master-slave database replication.")
+    analysis = jobs.analyze_job(job)
+    assert len(analysis["education_requirements"]) == 1
+    assert jobs.assess_eligibility(analysis, profile)["eligible"]
+    postgraduate = make_job(description="Requirements\nAngular required.\nMaster's degree in Computer Science.")
+    assert not jobs.assess_eligibility(postgraduate, profile)["eligible"]
+
+
 def test_disjunctions_and_parenthetical_preferences(profile):
     job = make_job(description="What we are looking for in you\nExperience with TypeScript, React or Flutter.\nExperience with Linux (Debian or Ubuntu preferred).")
     analysis = jobs.analyze_job(job)

@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 import fcntl
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import tempfile
@@ -44,6 +45,15 @@ _ALIASES = {
     "current_location": ["current location", "where do you currently live", "where are you currently based"],
     "current_company": ["current company", "current employer"],
     "current_job_title": ["current job title", "current title"],
+    "currently_employed": ["are you currently employed", "currently employed"],
+    "current_employment_summary": ["current employment summary", "describe your current employment", "describe your current role", "describe your current roles", "current roles"],
+    "current_employers": ["current employers", "current companies"],
+    "education_degree": ["degree", "university degree", "academic degree", "what is your degree"],
+    "highest_degree": ["highest degree", "highest academic degree", "highest level of education", "highest education level"],
+    "education_institution": ["university", "university name", "college university", "college or university", "which university did you attend"],
+    "education_field": ["field of study", "major", "academic major", "degree subject"],
+    "education_summary": ["education summary", "educational background", "describe your education"],
+    "graduation_year": ["graduation year", "year of graduation", "what year did you graduate"],
     "current_country": ["current country", "country of residence", "country"],
     "notice_period": ["notice period", "what is your notice period"],
     "relocation": ["willing to relocate", "are you willing to relocate", "relocation"],
@@ -58,7 +68,27 @@ _ALIAS_LOOKUP = {normalize_question(alias): key for key, aliases in _ALIASES.ite
 _LEGAL = {"work_authorization", "sponsorship", "relocation"}
 
 
+def _skill_key(skill: str) -> str:
+    # Preserve meaningful punctuation: C, C++ and C# are different skills.
+    normalized = re.sub(r"\s+", " ", skill.casefold()).strip()
+    return {"react.js": "react", "reactjs": "react", "node.js": "nodejs", "nest.js": "nestjs"}.get(normalized, normalized)
+
+
+def _question_skill(question: str) -> str | None:
+    text = re.sub(r"\s+", " ", question.strip().rstrip("?:")).casefold()
+    patterns = [r"(?:how many )?years of experience (?:do you have )?(?:in|with) (.+)",
+                r"how many years of (.+) experience do you have", r"years of (.+) experience",
+                r"(.+) experience in years"]
+    for pattern in patterns:
+        match = re.fullmatch(pattern, text)
+        if match:
+            return _skill_key(match.group(1))
+    return None
+
+
 def question_key(question: str) -> str:
+    if skill := _question_skill(question):
+        return "skill_years_experience:" + skill
     normalized = normalize_question(question)
     return _ALIAS_LOOKUP.get(normalized, normalized)
 
@@ -167,6 +197,95 @@ def _scope_matches(scope: dict, context: dict) -> bool:
                for key, value in scope.items())
 
 
+def _usable_evidence(items: list | None) -> list:
+    return [item for item in (items or []) if isinstance(item, dict)
+            and (item.get("source_id") or item.get("source"))
+            and item.get("status") in {"source_claim", "user_provided", "verified", "verified_fact"}]
+
+
+def _numeric_experience(profile: dict, question: str, skill: str | None) -> dict:
+    """Retrieve explicit sourced years; dates/skill presence never supply a duration."""
+    pointer = "/years_experience"
+    value = profile.get("years_experience")
+    if skill is not None:
+        matches = [(name, value) for name, value in profile.get("experience_years_by_skill", {}).items()
+                   if _skill_key(name) == skill]
+        if len(matches) != 1:
+            return _unknown(question, "No single explicit duration exists for the requested skill")
+        name, value = matches[0]
+        pointer = "/experience_years_by_skill/" + name.replace("~", "~0").replace("/", "~1")
+    evidence = _usable_evidence(profile.get("evidence", {}).get(pointer))
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0 or not evidence:
+        return _unknown(question, "Experience years require an explicit nonnegative number with verified provenance; dates are not summed")
+    return _known(value, "master_profile:" + pointer, evidence=evidence,
+                  scope={"skill": skill} if skill else {},
+                  interpretation="Explicit sourced years; no date arithmetic or rounding")
+
+
+def _academic_rank(degree: str) -> int | None:
+    for rank, pattern in [(4, r"^(?:doctor(?:ate)?|ph[.]?d[.]?)\b"),
+                          (3, r"^(?:master(?:'s)?|m[.]?sc[.]?)\b"),
+                          (2, r"^(?:bachelor(?:'s)?|b[.]?sc[.]?)\b"),
+                          (1, r"^associate(?:'s)?\b")]:
+        if re.search(pattern, degree, re.I):
+            return rank
+    return None
+
+
+def _education_fact(profile: dict, question: str, key: str, context: dict) -> dict:
+    entries = [(index, item) for index, item in enumerate(profile.get("education", []))
+               if isinstance(item, dict) and _usable_evidence(item.get("evidence"))]
+    if context.get("education_id"):
+        entries = [(index, item) for index, item in entries if item.get("id") == context["education_id"]]
+    elif key not in {"education_summary"}:
+        # A university/degree field cannot silently choose a vocational program.
+        entries = [(index, item) for index, item in entries if _academic_rank(item.get("degree", "")) is not None]
+    if key == "highest_degree":
+        entries = [(index, item) for index, item in entries if _academic_rank(item.get("degree", "")) is not None]
+    if key == "highest_degree" and entries:
+        if any(not _usable_evidence(item.get("evidence")) for item in profile.get("education", [])):
+            return _unknown(question, "Highest degree cannot be established while education records lack verified evidence")
+        # Unclassified qualifications make claims of highest attainment ambiguous.
+        unclassified = [item for item in profile.get("education", [])
+                        if _academic_rank(item.get("degree", "")) is None
+                        and not re.search(r"\b(program|course|training|certificate)\b", item.get("degree", ""), re.I)]
+        if unclassified:
+            return _unknown(question, "Highest degree cannot be determined from unclassified education records")
+        highest = max(_academic_rank(item["degree"]) for _, item in entries)
+        entries = [(index, item) for index, item in entries if _academic_rank(item["degree"]) == highest]
+    if not entries:
+        return _unknown(question, "No unambiguous sourced education record matches this field")
+    values = []
+    for index, item in entries:
+        if key in {"education_degree", "highest_degree"}:
+            value, field = item.get("degree"), "degree"
+        elif key == "education_institution":
+            value, field = item.get("institution"), "institution"
+        elif key == "education_field":
+            value, field = item.get("field_of_study"), "field_of_study"
+            if not value:
+                match = re.search(r"\bin (.+)$", item.get("degree", ""), re.I)
+                value, field = (match.group(1).strip(), "degree") if match else (None, "field_of_study")
+        elif key == "graduation_year":
+            # An employment/education end date is not proof of graduation.
+            value, field = item.get("graduation_year"), "graduation_year"
+            if not isinstance(value, (int, str)) or not re.fullmatch(r"[12][0-9]{3}", str(value)):
+                value = None
+        else:
+            value = f"{item['degree']} — {item['institution']}" if item.get("degree") and item.get("institution") else None
+            field = "degree+institution"
+        if value is None or value == "":
+            return _unknown(question, "The selected education record does not explicitly state the requested information")
+        values.append((value, index, field, _usable_evidence(item.get("evidence"))))
+    unique = list(dict.fromkeys(value for value, _, _, _ in values))
+    if key != "education_summary" and len(unique) != 1:
+        return _unknown(question, "Multiple education records match; an approved education_id or a more specific question is required")
+    return _known("; ".join(str(value) for value in unique) if key == "education_summary" else unique[0],
+                  "master_profile:" + "+".join(f"/education/{index}/{field}" for _, index, field, _ in values),
+                  evidence=[item for _, _, _, evidence in values for item in evidence],
+                  scope={"education_id": context["education_id"]} if context.get("education_id") else {})
+
+
 def _salary(root: Path, question: str, profile: dict, job: dict, context: dict) -> dict:
     required = ("currency", "period", "basis")
     missing = [key for key in required if not context.get(key)]
@@ -227,6 +346,41 @@ def resolve_question(root: Path, question: str, profile: dict, job: dict, contex
     """
     context = {"country": job.get("country"), "company": job.get("company"), "job_id": job.get("id"), **(context or {})}
     key = question_key(question)
+    profile_unknown = None
+    explicit_skill = _question_skill(question)
+    contextual_skill = context.get("skill") or context.get("technology")
+    if explicit_skill and contextual_skill and explicit_skill != _skill_key(contextual_skill):
+        return _unknown(question, "Question and configured skill context conflict")
+    if key == "years_experience" and contextual_skill:
+        key = "skill_years_experience:" + _skill_key(contextual_skill)
+    if key == "years_experience" or key.startswith("skill_years_experience:"):
+        requested_skill = key.partition(":")[2] if ":" in key else None
+        if requested_skill:
+            context["skill"] = requested_skill
+        result = _numeric_experience(profile, question, requested_skill)
+        if result["status"] == "KNOWN":
+            return result
+        profile_unknown = result
+    if key.startswith("education_") or key in {"highest_degree", "graduation_year"}:
+        result = _education_fact(profile, question, key, context)
+        if result["status"] == "KNOWN":
+            return result
+        profile_unknown = result
+    if key in {"currently_employed", "current_employment_summary", "current_employers"}:
+        current = [(index, item) for index, item in enumerate(profile.get("experience", []))
+                   if item.get("current") is True and _usable_evidence(item.get("evidence"))]
+        if current:
+            if key == "currently_employed":
+                answer = True
+            elif key == "current_employers" and all(item.get("company") for _, item in current):
+                answer = "; ".join(dict.fromkeys(item["company"] for _, item in current))
+            elif key == "current_employment_summary" and all(item.get("company") and item.get("title") for _, item in current):
+                answer = "; ".join(f"{item['title']} at {item['company']}" for _, item in current)
+            else:
+                answer = None
+            if answer is not None:
+                return _known(answer, "master_profile:" + "+".join(f"/experience/{index}" for index, _ in current),
+                              evidence=[e for _, item in current for e in _usable_evidence(item.get("evidence"))])
     fields = {"full_name": ("name",), "email": ("contact", "email"), "phone": ("contact", "phone"),
               "github": ("contact", "github"), "linkedin": ("contact", "linkedin"),
               "portfolio": ("contact", "portfolio"), "current_city": ("contact", "city"),
@@ -276,7 +430,7 @@ def resolve_question(root: Path, question: str, profile: dict, job: dict, contex
         if salary_result["status"] == "KNOWN":
             return salary_result
     with _bank(root) as (bank, directory):
-        candidates = [a for a in bank["answers"] if a.get("approved") and a.get("semantic_key") == key
+        candidates = [a for a in bank["answers"] if a.get("approved") and (a.get("semantic_key") == key or (key.startswith("skill_years_experience:") and a.get("semantic_key") == "years_experience" and _skill_key(str(a.get("scope", {}).get("skill", ""))) == key.partition(":")[2]))
                       and _scope_matches(a.get("scope", {}), context) and _has_required_scope(question, a.get("scope", {}))]
         if key in _LEGAL:
             candidates = [a for a in candidates if a.get("scope", {}).get("country")]
@@ -316,4 +470,4 @@ def resolve_question(root: Path, question: str, profile: dict, job: dict, contex
             return _known(entry["answer"], entry["source"], answer_id=entry["id"], scope=entry.get("scope", {}))
     if key == "expected_salary":
         return salary_result
-    return _unknown(question, "No approved, context-compatible fact found in profile, Answers Bank or previous records")
+    return profile_unknown or _unknown(question, "No approved, context-compatible fact found in profile, Answers Bank or previous records")

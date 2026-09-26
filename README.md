@@ -6,9 +6,9 @@ Read [workAI.md](workAI.md) before operating or extending the system. It contain
 
 ## Current capabilities
 
-The deterministic baseline extracts the supplied CV layout and hyperlinks, retains evidence, compiles selectable-text LaTeX CVs, ranks relevant sourced content, fetches public employer feeds, analyzes eligibility and alignment, persists company research, and tracks every application stage. The browser engine can fill and submit audited form mappings with confirmed receipts. It is tested against disposable local forms; production platform adapters remain disabled until actually audited. Source coverage is in [docs/JOB_SOURCES.md](docs/JOB_SOURCES.md); browser limitations are in [docs/PLATFORMS.md](docs/PLATFORMS.md).
+The pipeline extracts supported CV layouts and hyperlinks, reconciles multiple sources without replacing canonical facts, retains evidence, compiles selectable-text LaTeX CVs, ranks relevant sourced content, fetches public employer feeds, analyzes eligibility and alignment, persists company research, and tracks every application stage. Optional local OCR requires transcription review before its results become CV evidence. The browser engine can fill and submit audited form mappings with confirmed receipts. It is tested against disposable local forms; production platform adapters remain disabled until actually audited. Source coverage is in [docs/JOB_SOURCES.md](docs/JOB_SOURCES.md); browser limitations are in [docs/PLATFORMS.md](docs/PLATFORMS.md).
 
-No external model API is required. Current tailoring ranks source claims without generating new prose; unrestricted model-generated rewriting is not implemented. Major authenticated boards are not universally supported. A successful test fixture is not a real application. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for measured acceptance evidence and remaining work.
+No external model API is required. Optional OpenAI analysis extracts cited requirements and ranks existing fact IDs; local validation rejects unsupported quotes or candidate facts. Configure `OPENAI_API_KEY` and `WORKAI_OPENAI_MODEL` in ignored `.env` to enable it, then use `workai ai-analyze JOB_ID`. See [docs/AI_ANALYSIS.md](docs/AI_ANALYSIS.md). Current tailoring preserves exact source claims; unrestricted model-generated rewriting is not implemented. Major authenticated boards are not universally supported. A successful test fixture is not a real application. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for measured acceptance evidence and remaining work.
 
 ## Setup
 
@@ -24,7 +24,7 @@ python3 -m venv .venv
 .venv/bin/workai doctor
 ```
 
-The compiler installer verifies the pinned official release checksum and installs locally under ignored `.tools/`. Initial Tectonic compilation downloads TeX bundle dependencies. A system `tectonic` or `pdflatex` may also be used. `WORKAI_TECTONIC=/absolute/path/to/tectonic` overrides compiler lookup. `.env.example` documents optional settings; environment files are not loaded implicitly. Export variables in your shell or service configuration, never paste secrets into tracked configuration.
+The compiler installer verifies the pinned official release checksum and installs locally under ignored `.tools/`. Initial Tectonic compilation downloads TeX bundle dependencies. A system `tectonic` or `pdflatex` may also be used. `WORKAI_TECTONIC=/absolute/path/to/tectonic` overrides compiler lookup. `.env.example` documents optional settings. The AI module reads only its explicitly allowed settings from `.env`; other settings must be exported through your shell or service configuration. Never paste secrets into tracked configuration.
 
 Editable installation from a checkout is the supported deployment method. Keep candidate files and browser sessions backed up securely; they are intentionally absent from Git, including the private remote.
 
@@ -37,7 +37,7 @@ Editable installation from a checkout is the supported deployment method. Keep c
 .venv/bin/workai build-cv
 ```
 
-Original bytes are copied to immutable `data/source-cv/` files with SHA-256 manifests. Repeating ingestion is idempotent. Distinct or conflicting PDFs are archived and require evidence reconciliation; the current normalizer is tailored to the supplied résumé layout, not a universal CV parser. Scanned documents need OCR support documented by the ingestion module; unavailable OCR produces an explicit failure.
+Original bytes are copied to immutable `data/source-cv/` files with SHA-256 manifests. Repeating ingestion is idempotent. Distinct PDFs are reconciled with source provenance. Initial conflicts are withheld; later ingestion preserves existing canonical values and records differences for review. Profile saves retain immutable revisions and detect stale writes. Supported layouts remain finite. `workai ingest --ocr FILE.pdf` enables local Tesseract for scanned pages; unreviewed text cannot enter the CV. See [docs/INGESTION.md](docs/INGESTION.md) for transcription review and reconciliation.
 
 `data/master-cv/profile.yaml` is canonical and editable. Each fact requires provenance; unsupported changes fail CV generation. Section YAML files are derived exports. Retain source quotes and explicitly approved edit evidence. Master `.tex`/`.pdf` convenience links point to immutable version directories; application CVs have company/position filenames and content-based version IDs. Do not edit distribution PDFs.
 

@@ -148,6 +148,12 @@ class Store:
         url = canonical_url(job.get("job_url"))
         platform = str(job.get("platform") or "manual").casefold()
         external_id = str(job.get("external_id") or "")
+        if job.get("job_url_kind") == "listing":
+            if not external_id:
+                raise StateError("A shared listing URL requires a stable external vacancy ID")
+            # Keep the real navigation URL in job data. It does not identify one
+            # vacancy and must not collapse every opening on the careers page.
+            url = ""
         fingerprint = stable_id("role", normalized_name(company), normalized_name(job.get("position", "")), job.get("country"), job.get("city"))
         with self.transaction():
             self.db.execute("INSERT OR IGNORE INTO companies VALUES(?,?,?,?)", (company_id, company, json_value({"name": company, "website": job.get("company_url")}), utcnow()))

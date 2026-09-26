@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 
-ANALYZER_VERSION = "2026.09.26.2"
+ANALYZER_VERSION = "2026.09.26.4"
 TARGET_COUNTRIES = {"Egypt", "Saudi Arabia", "United Arab Emirates", "Qatar", "Kuwait", "Bahrain", "Oman"}
 COUNTRIES = {
     "Egypt": ("EG", "egypt", "cairo", "giza", "alexandria", "mansoura"),
@@ -273,7 +273,7 @@ def parse_job(payload: dict, platform: str = "manual") -> dict:
                 break
     result = {**p, "id": p.get("id") if p.get("platform") and p.get("date_discovered") else _id(platform, p.get("board") or company, ext_id or job_url or position),
               "external_id": ext_id or None, "company": company, "position": position, "description": description,
-              "job_url": job_url, "apply_url": p.get("apply_url") or p.get("applyUrl") or job_url, "platform": platform,
+              "job_url": job_url, "job_url_kind": p.get("job_url_kind", "vacancy"), "apply_url": p.get("apply_url") or p.get("applyUrl") or job_url, "platform": platform,
               "country": country, "city": city, "location_text": location_text, "remote": remote, "work_mode": work_mode or None,
               "remote_from_egypt": remote_egypt, "employment_type": commitment, "seniority": seniority,
               "required_skills": required, "preferred_skills": preferred, "min_years_experience": p.get("min_years_experience"),
@@ -285,7 +285,7 @@ def parse_job(payload: dict, platform: str = "manual") -> dict:
               "application_questions": p.get("application_questions", []), "provenance": p.get("provenance", {})}
     # Do not retain arbitrary hidden API fields, recruiter metadata or tracking code.
     fields = {"id", "external_id", "company", "position", "description", "job_url", "apply_url", "platform", "country", "city", "location_text", "remote", "work_mode", "remote_from_egypt", "employment_type", "seniority", "required_skills", "preferred_skills", "min_years_experience", "salary_range", "date_discovered", "job_posted_date", "application_deadline", "company_url", "source_url", "source_kind", "application_questions", "provenance", "board", "adapter", "work_authorization_required", "allowed_countries", "required_languages", "visa_sponsorship", "work_permit_support", "relocation_support", "relocation_support_adequate"}
-    return {k: v for k, v in result.items() if k in fields}
+    return {k: v for k, v in result.items() if k in fields or k == "job_url_kind"}
 
 
 def analyze_job(job: dict, profile: dict | None = None) -> dict:
@@ -325,7 +325,7 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
         if mode == "responsibilities": responsibilities.append(line)
         if mode == "benefits": benefits.append(line)
         if mode == "required": qualifications.append(line)
-        if re.search(r"bachelor|master.?s|degree|computer science|engineering degree|equivalent (?:education|experience)", low):
+        if re.search(r"\bbachelor|\bmaster(?:['’]s|s)?\s+degree\b|\bdegree\b|computer science|engineering degree|equivalent (?:education|experience)", low):
             education.append(line)
             if not optional and mode != "benefits": education_required.append(line)
         if not optional and re.search(r"\b(?:english|arabic|french|german)\b", low): languages.append(line)
@@ -333,12 +333,19 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
             if optional: continue
             experience.append(line)
             exp_requirements.append({"min": float(match.group(1)), "max": float(match.group(2)) if match.group(2) else None, "skills": skills, "text": line})
+        # Employer feeds also expose labelled experience fields, with the unit
+        # after the value rather than before the word "experience".
+        labelled = re.fullmatch(r"\s*(?:minimum\s+)?(?:years of\s+)?experience(?:\s+(?:needed|required))?\s*:\s*(\d+(?:\.\d+)?)\s*\+?\s*(?:(?:-|–|to)\s*(\d+(?:\.\d+)?))?\s*years?\.?\s*", line, re.I)
+        if labelled and not any(item["text"] == line for item in exp_requirements):
+            experience.append(line)
+            exp_requirements.append({"min": float(labelled.group(1)), "max": float(labelled.group(2)) if labelled.group(2) else None, "skills": [], "text": line})
     technologies = canonical_skills(text + "\n" + str(job.get("position", "")))
     required = sorted(set(required + declared_required))
     preferred = sorted(set(preferred + declared_preferred) - set(required))
-    minimum = declared_minimum
-    if minimum is None and exp_requirements:
-        minimum = max(x["min"] for x in exp_requirements)
+    minimums = [x["min"] for x in exp_requirements]
+    if declared_minimum is not None:
+        minimums.append(declared_minimum)
+    minimum = max(minimums) if minimums else None
     salary = job.get("salary_range")
     if not salary:
         salary_lines = [line for line in text.splitlines() if re.search(r"salary|compensation|remuneration", line, re.I) and re.search(r"\d", line) and len(line) < 300]
@@ -475,7 +482,10 @@ def assess_eligibility(job: dict, profile: dict) -> dict:
         degrees = " ".join(str(x.get("degree", "")) for x in profile.get("education", [])).lower()
         if not degrees:
             unknowns.append("Verified education matching employer requirement: " + requirement)
-        elif re.search(r"\bmaster", requirement, re.I) and not re.search(r"master|m\.?sc", degrees):
+        elif (re.search(r"\bmaster(?:['’]s|s)?\b", requirement, re.I)
+              and not re.search(r"master|m\.?sc", degrees)
+              and not (re.search(r"bachelor", requirement, re.I) and re.search(r"\bor\b", requirement, re.I)
+                       and re.search(r"bachelor|b\.?sc", degrees))):
             unknowns.append("Required postgraduate degree or accepted equivalent: " + requirement)
         elif re.search(r"computer science", requirement, re.I) and not re.search(r"computer science|computer engineering", degrees) and not re.search(r"related|equivalent|engineering", requirement, re.I):
             unknowns.append("Evidence of the specifically required computer science degree or employer-accepted equivalent.")
@@ -542,9 +552,12 @@ class _PublicRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _fetch(url: str, *, expect_json: bool = True) -> Any:
+def _fetch(url: str, *, expect_json: bool = True, json_body: dict | None = None) -> Any:
     _public_url(url)
-    request = urllib.request.Request(url, headers={"User-Agent": "WorkAI/0.1 (public job discovery; no authentication bypass)", "Accept": "application/json" if expect_json else "text/html"})
+    headers = {"User-Agent": "WorkAI/0.1 (public job discovery; no authentication bypass)", "Accept": "application/json" if expect_json else "text/html"}
+    if json_body is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, headers=headers, data=json.dumps(json_body).encode("utf-8") if json_body is not None else None)
     with urllib.request.build_opener(_PublicRedirect()).open(request, timeout=25) as response:
         content = response.read(12_000_001)
         if len(content) > 12_000_000: raise ValueError("Source response exceeds 12 MB limit.")
@@ -592,6 +605,103 @@ def _jsonld_jobs(text: str) -> list[dict]:
     return result
 
 
+def _workable_jobs(source: dict) -> tuple[list[dict], str]:
+    """Read Workable's public widget and full descriptions, once per vacancy.
+
+    The widget may repeat a shortcode for several locations. Those locations
+    are employer evidence, not separate applications or residence permission.
+    """
+    board = urllib.parse.quote(source["board"], safe="")
+    url = f"https://apply.workable.com/api/v1/widget/accounts/{board}"
+    listing = _fetch(url)
+    grouped: dict[str, list[dict]] = {}
+    for item in listing.get("jobs", []):
+        if item.get("shortcode") and ROLE_PATTERN.search(item.get("title", "")):
+            grouped.setdefault(item["shortcode"], []).append(item)
+    payloads = []
+    for shortcode, rows in grouped.items():
+        detail_url = f"https://apply.workable.com/api/v2/accounts/{board}/jobs/{urllib.parse.quote(shortcode, safe='')}"
+        detail = _fetch(detail_url)
+        if detail.get("state") != "published" or detail.get("isInternal"):
+            continue
+        locations = []
+        for record in [detail, *rows]:
+            values = record.get("locations") or [record.get("location") or {key: record[key] for key in ["country", "city"] if record.get(key)}]
+            for location in values:
+                if location and not location.get("hidden") and location not in locations:
+                    locations.append(location)
+        # Preserve all alternatives and select an actually published Egypt
+        # location for Egypt-based discovery, independent of widget row order.
+        primary = next((item for item in locations if _country(item.get("country") or item.get("countryCode")) == "Egypt"), locations[0] if locations else {})
+        first = rows[0]
+        description = str(detail.get("description") or "")
+        for section in ["requirements", "benefits"]:
+            if detail.get(section):
+                description += f"\n<h2>{section.title()}</h2>\n{detail[section]}"
+        payloads.append({"external_id": shortcode, "title": detail.get("title") or first["title"],
+                         "company": source.get("company") or listing.get("name"), "description": description,
+                         "location": primary, "country": primary.get("country") or primary.get("countryCode"),
+                         "remote": detail.get("remote", first.get("telecommuting")),
+                         "workplaceType": detail.get("workplace"), "employment_type": detail.get("employment_type") or first.get("employment_type"),
+                         "job_url": next((row["url"] for row in rows if row.get("url")), None),
+                         "apply_url": next((row["application_url"] for row in rows if row.get("application_url")), None),
+                         "job_posted_date": detail.get("published") or first.get("published_on"),
+                         "_source_url": detail_url, "source_kind": "employer_published",
+                         "provenance": {"listing_url": url, "detail_url": detail_url, "retrieved_at": _now(),
+                                        "locations": locations, "widget_rows": len(rows),
+                                        "description_sha256": hashlib.sha256(description.encode()).hexdigest()}})
+    return payloads, url
+
+
+def _flairstech_jobs(source: dict) -> tuple[list[dict], str]:
+    """Read the same unauthenticated paginated search used by Engage careers."""
+    endpoint = "https://apiengage.flairstech.com/api/Positions/GetAllAvailablePositions"
+    page_size = 10
+    payloads, seen = [], set()
+    first_url = f"{endpoint}?pageIndex=0&pageSize={page_size}&"
+    for page_index in range(100):
+        url = f"{endpoint}?pageIndex={page_index}&pageSize={page_size}&"
+        response = _fetch(url, json_body={})
+        if response.get("status") is not True:
+            raise ValueError("FlairsTech public search did not report a successful response.")
+        page = response.get("result", {})
+        if page.get("pageIndex") != page_index:
+            raise ValueError("FlairsTech returned an unexpected page index.")
+        records = page.get("records", [])
+        for record in records:
+            identifier = record.get("id")
+            if not identifier or identifier in seen:
+                continue
+            seen.add(identifier)
+            if record.get("isAvailable") is not True or record.get("validForCandidates") is not True or not ROLE_PATTERN.search(record.get("title", "")):
+                continue
+            description = record.get("requirements") or ""
+            if record.get("experienceNeeded"):
+                experience = str(record["experienceNeeded"]).strip()
+                unit = "" if re.search(r"\b(?:years?|yrs?)\b", experience, re.I) else " years"
+                description += f"\n<p>Experience needed: {html.escape(experience)}{unit}.</p>"
+            payloads.append({"external_id": identifier, "title": record["title"], "company": source.get("company") or "FlairsTech",
+                             "job_url_kind": "vacancy" if source.get("job_url_template") else "listing",
+                             "description": description, "location": record.get("positionLocation"),
+                             "job_url": source.get("job_url_template", "https://engage.flairstech.com/recruiting/careers").replace("{id}", urllib.parse.quote(identifier, safe="")),
+                             "_source_url": url, "source_kind": "employer_published",
+                             "provenance": {"listing_url": first_url, "detail_url": url, "http_method": "POST", "request_body": {},
+                                            "retrieved_at": _now(), "page_index": page_index,
+                                            "source_experience_needed": record.get("experienceNeeded"),
+                                            "source_created_at": record.get("createDate"), "source_updated_at": record.get("lastModifiedDate"),
+                                            "description_sha256": hashlib.sha256(description.encode()).hexdigest()}})
+        pages = page.get("pagesTotalCount")
+        if not isinstance(pages, int) or pages < 0:
+            raise ValueError("FlairsTech search did not provide a valid page count.")
+        if page_index + 1 >= pages:
+            break
+        if not records:
+            raise ValueError("FlairsTech returned an empty page before the advertised end.")
+    else:
+        raise ValueError("FlairsTech search exceeds the 100-page discovery limit.")
+    return payloads, first_url
+
+
 def _source_jobs(source: dict) -> tuple[list[dict], str]:
     kind, board = source["type"], source.get("board", "")
     if kind == "greenhouse":
@@ -617,13 +727,17 @@ def _source_jobs(source: dict) -> tuple[list[dict], str]:
     elif kind == "jsonld":
         url = source["url"]
         payloads = _jsonld_jobs(_fetch(url, expect_json=False))
+    elif kind == "workable_widget":
+        payloads, url = _workable_jobs(source)
+    elif kind == "flairstech":
+        payloads, url = _flairstech_jobs(source)
     elif kind == "manual_session":
         raise PermissionError("MANUAL_SESSION_REQUIRED: authenticated permitted adapter not configured; discovery is not implemented for this platform.")
     else:
         raise ValueError(f"Unsupported discovery source type: {kind}")
     jobs = []
     for payload in payloads:
-        payload = {**payload, "_company": source.get("company") or board, "_company_url": source.get("company_url"), "_source_url": url, "board": board or None}
+        payload = {**payload, "_company": source.get("company") or board, "_company_url": source.get("company_url"), "_source_url": payload.get("_source_url") or url, "board": board or None}
         if kind == "jsonld": payload["_url"] = payload.get("url") or url
         job = parse_job(payload, kind)
         if ROLE_PATTERN.search(job.get("position") or ""):

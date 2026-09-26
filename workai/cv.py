@@ -75,12 +75,12 @@ def _assert_evidence(profile: dict, root: Path | None = None) -> None:
         if manifest_file.exists():
             manifest = json.loads(manifest_file.read_text())
             source_texts = {}
-            from .profile import extract_pdf
+            from .profile import load_source_extraction
             for source in manifest["sources"]:
                 archive = root / "data/source-cv" / source["archive_name"]
                 if not archive.exists() or hashlib.sha256(archive.read_bytes()).hexdigest() != source["sha256"]:
                     raise CVError("Immutable source CV checksum mismatch")
-                extraction = extract_pdf(archive)
+                extraction = load_source_extraction(root, source)
                 source_texts[source["source_id"]] = _normalize_text(extraction["text"]) + " " + " ".join(u for p in extraction["pages"] for u in p["links"]).casefold()
             evidence_items = [e for items in profile["evidence"].values() for e in items]
             evidence_items += [e for field in ("experience", "education", "projects", "certifications", "languages") for record in profile.get(field, []) for e in record.get("evidence", [])]
@@ -265,6 +265,10 @@ def tailor_cv(root: Path, job: dict, analysis: dict) -> dict:
     root = Path(root).resolve()
     profile = load_profile(root)
     _assert_evidence(profile, root)
+    if analysis.get("ai_review"):
+        from .reasoning import rank_profile, validate_review
+        review = validate_review(analysis["ai_review"]["review"], job, profile)
+        return _create_version(root, rank_profile(profile, review), job, analysis, master=False)
     tailored = copy.deepcopy(profile)
     keywords = []
     for key in ("required_skills", "preferred_skills", "required_keywords", "preferred_keywords", "technology_keywords"):

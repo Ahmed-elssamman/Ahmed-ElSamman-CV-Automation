@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added conservative multi-PDF reconciliation, canonical revision protection and optional reviewed local OCR.
+- Added optional OpenAI Responses analysis with exact-source quotes, bounded fact selection and local validation.
+- Added Workable public widget/detail and FlairsTech paginated vacancy discovery with complete descriptions and source provenance.
+- Fixed labelled experience requirements and conflicting metadata so lower feed values cannot weaken explicit description minimums.
+
 ## 0.1.0 — 2026-09-26
 
 - Preserved the complete 58-section operating specification and initialized the project architecture.

@@ -23,6 +23,14 @@ def parser():
     sub.add_parser("init", help="Create private runtime directories and database")
     ingest = sub.add_parser("ingest", help="Archive/extract source PDFs and normalize candidate facts")
     ingest.add_argument("pdfs", nargs="+", type=Path)
+    ingest.add_argument("--ocr", action="store_true", help="Use local OCR for image-only pages; results require evidence review")
+    ingest.add_argument("--ocr-language", default="eng", help="Installed Tesseract language code(s)")
+    review = sub.add_parser("review-ocr", help="Archive transcription compared against every original page; does not ingest")
+    review.add_argument("source_id")
+    review.add_argument("--pages-json", type=Path, required=True, help="JSON list of complete reviewed {page, text} records")
+    review.add_argument("--reviewer", required=True)
+    review.add_argument("--extraction-sha256", required=True)
+    review.add_argument("--note", required=True, help="Actual review performed and corrections made")
     sub.add_parser("build-cv", help="Compile and validate master LaTeX/PDF")
     tailor = sub.add_parser("tailor-cv", help="Build a truthful CV and analysis for a stored job without applying")
     tailor.add_argument("job_id")
@@ -30,6 +38,8 @@ def parser():
     sync.add_argument("platform")
     sync.add_argument("--inspect-only", action="store_true")
     sub.add_parser("validate-profile")
+    ai = sub.add_parser("ai-analyze", help="Source-cited AI review for a stored job; never submits")
+    ai.add_argument("job_id")
     sub.add_parser("unknowns", help="Show missing profile and application questions")
     sub.add_parser("discover", help="Fetch configured live public job feeds")
     load = sub.add_parser("import-jobs", help="Import actual job JSON records without submitting")
@@ -81,16 +91,27 @@ def main(argv=None) -> int:
                 output = {"database": str(store.path), "csv": str(store.export_csv())}
         elif command == "ingest":
             from .profile import ingest_pdfs
-            profile = ingest_pdfs(root, arguments.pdfs)
+            profile = ingest_pdfs(root, arguments.pdfs, ocr=arguments.ocr, ocr_language=arguments.ocr_language)
             with Store(root) as store:
                 store.save_candidate(profile)
             output = {"profile_path": str(root / "data/master-cv/profile.yaml"), "source_ids": profile.get("source_ids"), "unknown_fields": profile.get("unknowns")}
         elif command == "build-cv":
             from .cv import build_master
             output = build_master(root)
+        elif command == "review-ocr":
+            from .profile import review_ocr
+            output = review_ocr(root, arguments.source_id,
+                                reviewed_pages=json.loads(arguments.pages_json.read_text()),
+                                reviewer=arguments.reviewer, expected_extraction_sha256=arguments.extraction_sha256,
+                                note=arguments.note)
         elif command == "validate-profile":
             from .profile import load_profile, validate_profile
             output = validate_profile(load_profile(root))
+        elif command == "ai-analyze":
+            from .profile import load_profile
+            from .reasoning import review_job
+            with Store(root) as store:
+                output = review_job(root, store.get_job(arguments.job_id), load_profile(root))
         elif command == "tailor-cv":
             from .profile import load_profile
             from .cv import tailor_cv
@@ -176,6 +197,7 @@ def main(argv=None) -> int:
             output = audit_tracked_files(root)
         elif command == "doctor":
             from .cv import find_compiler
+            from .reasoning import configured
             try:
                 compiler = find_compiler(root)
             except Exception as error:
@@ -184,6 +206,7 @@ def main(argv=None) -> int:
                       "playwright": bool(importlib.util.find_spec("playwright")),
                       "master_profile": (root / "data/master-cv/profile.yaml").exists(),
                       "platform_config": (root / "config/platforms.yaml").exists(),
+                      "runtime_ai_configured": configured(root),
                       "operating_manual": (root / "workAI.md").exists()}
         else:
             raise ValueError(f"Unknown command {command}")

@@ -142,3 +142,124 @@ def test_generic_salary_bank_scope_cannot_match_explicit_component(tmp_path, pro
     add_answer(tmp_path, 'What compensation do you want?', 40000, source='fixture-user', scope=scope)
     assert resolve_question(tmp_path, 'What compensation do you want?', profile, {'country': 'Egypt'}, scope)['answer'] == 40000
     assert resolve_question(tmp_path, 'What compensation do you want?', profile, {'country': 'Egypt'}, {**scope, 'component': 'base'})['status'] == 'UNKNOWN'
+
+
+def _fixture_evidence(quote):
+    return [{'source_id': 'user:fixture', 'quote': quote, 'status': 'user_provided'}]
+
+
+def test_education_reuses_explicit_degree_and_university_without_graduation_guess(tmp_path, profile):
+    profile['education'] = [
+        {'id': 'degree-1', 'degree': 'Bachelor of Science in Computer Science', 'institution': 'Fixture University',
+         'start_date': None, 'end_date': None,
+         'evidence': _fixture_evidence('Bachelor of Science in Computer Science, Fixture University')},
+        {'id': 'course-1', 'degree': 'Web Development Program', 'institution': 'Fixture Institute',
+         'evidence': _fixture_evidence('Web Development Program, Fixture Institute')},
+    ]
+    for question in ['University name', 'Which university did you attend?']:
+        result = resolve_question(tmp_path, question, profile, {})
+        assert result['answer'] == 'Fixture University'
+        assert result['source'] == 'master_profile:/education/0/institution'
+        assert result['evidence'][0]['source_id'] == 'user:fixture'
+    assert resolve_question(tmp_path, 'Degree', profile, {})['answer'] == 'Bachelor of Science in Computer Science'
+    assert resolve_question(tmp_path, 'Highest level of education', profile, {})['answer'] == 'Bachelor of Science in Computer Science'
+    assert resolve_question(tmp_path, 'Field of study', profile, {})['answer'] == 'Computer Science'
+    assert resolve_question(tmp_path, 'Graduation year', profile, {})['status'] == 'UNKNOWN'
+    summary = resolve_question(tmp_path, 'Educational background', profile, {})
+    assert 'Fixture University' in summary['answer'] and 'Fixture Institute' in summary['answer']
+
+
+def test_multiple_education_records_require_specificity_and_never_use_end_date_as_graduation(tmp_path, profile):
+    profile['education'] = [
+        {'id': 'bachelor', 'degree': 'Bachelor of Science in Mathematics', 'institution': 'First University',
+         'end_date': '2020-05', 'evidence': _fixture_evidence('Bachelor of Science in Mathematics at First University')},
+        {'id': 'master', 'degree': 'Master of Science in Computer Science', 'institution': 'Second University',
+         'graduation_year': 2024, 'evidence': _fixture_evidence('Master of Science in Computer Science at Second University, graduated 2024')},
+    ]
+    assert resolve_question(tmp_path, 'University', profile, {})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'Degree', profile, {})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'Highest degree', profile, {})['answer'] == 'Master of Science in Computer Science'
+    assert resolve_question(tmp_path, 'University', profile, {}, {'education_id': 'bachelor'})['answer'] == 'First University'
+    assert resolve_question(tmp_path, 'Graduation year', profile, {}, {'education_id': 'bachelor'})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'Year of graduation', profile, {}, {'education_id': 'master'})['answer'] == 2024
+
+
+def test_unverified_education_is_not_promoted_to_fact(tmp_path, profile):
+    profile['education'] = [{'degree': 'Doctor of Philosophy in Computing', 'institution': 'Unverified University',
+                             'evidence': [{'source_id': 'external:speculation', 'status': 'unverified_claim'}]}]
+    for question in ['Degree', 'University', 'Educational background', 'Highest degree']:
+        assert resolve_question(tmp_path, question, profile, {})['status'] == 'UNKNOWN'
+
+
+def test_all_current_roles_can_be_summarized_without_primary_employer_guess(tmp_path, profile):
+    profile['experience'] = [
+        {'title': 'Frontend Engineer', 'company': 'First Corp', 'current': True,
+         'evidence': _fixture_evidence('Frontend Engineer at First Corp, Present')},
+        {'title': 'Frontend Developer - Part-time', 'company': 'Second Corp', 'current': True,
+         'evidence': _fixture_evidence('Frontend Developer - Part-time at Second Corp, Present')},
+        {'title': 'Earlier Developer', 'company': 'Past Corp', 'current': False,
+         'evidence': _fixture_evidence('Earlier Developer at Past Corp, ended 2020')},
+    ]
+    result = resolve_question(tmp_path, 'Describe your current roles', profile, {})
+    assert result['answer'] == 'Frontend Engineer at First Corp; Frontend Developer - Part-time at Second Corp'
+    assert resolve_question(tmp_path, 'Are you currently employed?', profile, {})['answer'] is True
+    assert resolve_question(tmp_path, 'Current employers', profile, {})['answer'] == 'First Corp; Second Corp'
+    assert resolve_question(tmp_path, 'Current employer', profile, {})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'Current job title', profile, {})['status'] == 'UNKNOWN'
+    profile['experience'] = []
+    assert resolve_question(tmp_path, 'Are you currently employed?', profile, {})['status'] == 'UNKNOWN'
+
+
+def test_experience_requires_explicit_sourced_duration_and_never_sums_concurrent_roles(tmp_path, profile):
+    profile['experience'] = [
+        {'start_date': '2020-01', 'current': True, 'company': 'One'},
+        {'start_date': '2020-01', 'current': True, 'company': 'Two'},
+    ]
+    assert resolve_question(tmp_path, 'Total years of experience', profile, {})['status'] == 'UNKNOWN'
+    profile['years_experience'] = 3.5
+    assert resolve_question(tmp_path, 'Years of experience', profile, {})['status'] == 'UNKNOWN'
+    profile['evidence'] = {'/years_experience': _fixture_evidence('My total professional experience is 3.5 years')}
+    result = resolve_question(tmp_path, 'How many years of experience do you have?', profile, {})
+    assert result['answer'] == 3.5
+    assert result['source'] == 'master_profile:/years_experience'
+    assert result['evidence'][0]['quote'].endswith('3.5 years')
+
+
+def test_skill_years_never_reuse_total_years_or_infer_from_skill_presence(tmp_path, profile):
+    profile.update(years_experience=5, skills=['Angular', 'React.js'], experience_years_by_skill={'Angular': 2, 'React.js': 0.5})
+    profile['evidence'] = {'/years_experience': _fixture_evidence('Five total years'),
+                           '/experience_years_by_skill/Angular': _fixture_evidence('Two years using Angular'),
+                           '/experience_years_by_skill/React.js': _fixture_evidence('Half a year using React')}
+    assert resolve_question(tmp_path, 'How many years of experience do you have with Angular?', profile, {})['answer'] == 2
+    assert resolve_question(tmp_path, 'Years of React experience', profile, {})['answer'] == 0.5
+    assert resolve_question(tmp_path, 'Years of experience', profile, {}, {'skill': 'Angular'})['answer'] == 2
+    assert resolve_question(tmp_path, 'How many years of experience do you have with AngularJS?', profile, {})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'Years of React Native experience', profile, {})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'Years of Angular experience', profile, {}, {'skill': 'React'})['status'] == 'UNKNOWN'
+    del profile['evidence']['/experience_years_by_skill/Angular']
+    assert resolve_question(tmp_path, 'Years of Angular experience', profile, {})['status'] == 'UNKNOWN'
+
+
+def test_skill_question_synonyms_reuse_approved_bank_without_punctuation_collisions(tmp_path, profile):
+    add_answer(tmp_path, 'Years of experience with Angular', 2, source='user:fixture')
+    assert resolve_question(tmp_path, 'How many years of Angular experience do you have?', profile, {})['answer'] == 2
+    assert resolve_question(tmp_path, 'Years of experience with AngularJS', profile, {})['status'] == 'UNKNOWN'
+    add_answer(tmp_path, 'Years of experience with C++', 4, source='user:fixture')
+    assert resolve_question(tmp_path, 'C++ experience in years', profile, {})['answer'] == 4
+    assert resolve_question(tmp_path, 'Years of experience with C', profile, {})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'Years of experience with C#', profile, {})['status'] == 'UNKNOWN'
+
+
+def test_generic_scoped_experience_answer_cannot_leak_into_other_skills(tmp_path, profile):
+    add_answer(tmp_path, 'Years of experience', 5, source='user:fixture')
+    add_answer(tmp_path, 'Years of experience', 2, source='user:fixture', scope={'skill': 'Angular'})
+    assert resolve_question(tmp_path, 'Years of experience', profile, {}, {'skill': 'Angular'})['answer'] == 2
+    assert resolve_question(tmp_path, 'Years of experience', profile, {}, {'skill': 'React'})['status'] == 'UNKNOWN'
+    assert resolve_question(tmp_path, 'Years of experience', profile, {})['answer'] == 5
+
+
+@pytest.mark.parametrize('value', [True, -1, float('nan'), float('inf'), '3+', 'about four'])
+def test_invalid_or_nonexact_profile_years_are_not_numeric_answers(tmp_path, profile, value):
+    profile['years_experience'] = value
+    profile['evidence'] = {'/years_experience': _fixture_evidence(str(value))}
+    assert resolve_question(tmp_path, 'Years of experience', profile, {})['status'] == 'UNKNOWN'

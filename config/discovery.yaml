@@ -35,6 +35,40 @@ sources:
     board: NileBits
     company: Nile Bits
     company_url: https://www.nilebits.com/
+  - name: Robusta Egypt and Gulf careers
+    type: workable_widget
+    board: robusta
+    company: Robusta
+    company_url: https://robustagroup.com/
+  - name: Sumerge careers
+    type: workable_widget
+    board: sumerge-1
+    company: Sumerge
+    company_url: https://www.sumerge.com/
+  - name: Rubikal careers
+    type: workable_widget
+    board: rubikal
+    company: Rubikal
+    company_url: https://rubikal.com/
+  - name: Integrant careers
+    type: workable_widget
+    board: integrant
+    company: Integrant
+    company_url: https://integrant.com/
+  - name: Foodics careers
+    type: workable_widget
+    board: foodics
+    company: Foodics
+    company_url: https://www.foodics.com/
+  - name: Salla careers
+    type: workable_widget
+    board: salla
+    company: Salla
+    company_url: https://salla.com/
+  - name: FlairsTech Engage careers
+    type: flairstech
+    company: FlairsTech
+    company_url: https://flairstech.com/
   - name: Talabat careers (optional public SmartRecruiters API)
     type: smartrecruiters
     board: talabat

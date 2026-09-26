@@ -44,8 +44,11 @@ def _fingerprint_files(root: Path) -> str:
             else:
                 digest.update(path.read_bytes())
     # Analyzer/answer/QA fixes must invalidate a previously unsafe classification.
-    for module in ("jobs.py", "answers.py", "cv.py", "orchestrator.py", "browser.py"):
+    for module in ("jobs.py", "answers.py", "cv.py", "orchestrator.py", "browser.py", "reasoning.py"):
         digest.update((Path(__file__).parent / module).read_bytes())
+    from .reasoning import settings
+    ai = settings(root)
+    digest.update(json.dumps({"model": ai.get("WORKAI_OPENAI_MODEL"), "configured": bool(ai.get("OPENAI_API_KEY"))}, sort_keys=True).encode())
     return digest.hexdigest()
 
 
@@ -180,6 +183,16 @@ class Orchestrator:
                 job = self.operation("Job Analysis Agent", "reanalyze", job, analyze_job, app.get("job_snapshot") or job, profile)
                 eligibility = self.operation("Job Analysis Agent", "eligibility", job, assess_eligibility, job, profile)
                 ats = self.operation("ATS Analysis Agent", "score", job, ats_analysis, job, profile)
+                from .reasoning import configured, review_job
+                if eligibility["eligible"] and configured(self.root):
+                    review = self.operation("AI Source Review Agent", "source_review", job, review_job, self.root, job, profile)
+                    ats["ai_review"] = review
+                    concerns = [item["quote"] for item in review["review"]["requirements"]
+                                if item["importance"] in {"required", "unclear"} and item["needs_factual_review"]]
+                    if concerns:
+                        eligibility["unknowns"].extend("Source-cited AI review requires factual resolution: " + quote for quote in concerns)
+                        eligibility.update(eligible=False, status="NEEDS_INFORMATION")
+                    self.store.event("AI_SOURCE_REVIEW", {"review_id": review["id"], "model": review["model"], "concerns": concerns}, application_id=app_id, job_id=job["id"])
                 self.store.save_artifact("ats", stable_id("ats", job["id"], json.dumps(ats, sort_keys=True)), job["id"], ats)
                 updates = {"eligibility": eligibility, "ats": ats, "knowledge_fingerprint": fingerprint,
                            "profile_fingerprint": profile_fingerprint(profile), "analyzed_job": job, "cv": None, "research": None}

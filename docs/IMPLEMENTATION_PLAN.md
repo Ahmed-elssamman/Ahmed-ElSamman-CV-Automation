@@ -28,3 +28,9 @@ Modules accept a project root `pathlib.Path` and exchange JSON-serializable dict
 ## Acceptance rule
 
 A successful local fixture is not a real application. A discovered vacancy is not a submitted application. Completion requires a confirmed suitable real-job submission and every required persisted artifact. Unknown legal/personal fields remain unresolved until supplied; unrelated jobs continue.
+
+## Continuation state — expanded implementation
+
+Implemented beyond the initial baseline: two-source reconciliation with preserved canonical revisions; actual local OCR plus explicit review; optional source-cited OpenAI ranking; Workable and FlairsTech public feeds; safe identity for shared careers URLs; additional sourced answer retrieval. All candidate changes still require factual evidence. Current runtime has 90 discovered listings, all excluded by the latest deterministic assessment. No real employer submission or external profile change has been confirmed.
+
+Next operational work: broaden permitted sources for suitable junior/mid vacancies; audit a compatible vacancy’s actual form and receipt; resolve its genuinely unknown required fields; execute and reconcile the first real submission, then verify repeatability. Runtime model validation awaits locally configured API credentials/model. Continue improving semantic requirement handling using observed errors and evidence; never weaken criteria merely to pass acceptance.

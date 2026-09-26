@@ -47,6 +47,20 @@ def test_duplicate_same_job_and_cross_platform(tmp_path):
         assert len(store.applications()) == 1
 
 
+def test_shared_careers_url_does_not_merge_distinct_vacancies(tmp_path):
+    with Store(tmp_path) as store:
+        source = job(job_url="https://example.test/careers", job_url_kind="listing")
+        first, created = store.upsert_job({**source, "external_id": "vacancy-a"})
+        second, other = store.upsert_job({**source, "external_id": "vacancy-b", "position": "Angular Engineer"})
+        repeated, again = store.upsert_job({**source, "external_id": "vacancy-a"})
+        assert created and other and not again
+        assert first["id"] == repeated["id"] != second["id"]
+        assert first["job_url"] == second["job_url"] == source["job_url"]
+        assert len(store.jobs()) == 2
+        with pytest.raises(StateError, match="stable external"):
+            store.upsert_job(source)
+
+
 def test_concurrent_application_claim(tmp_path):
     with Store(tmp_path) as store:
         role, _ = store.upsert_job(job())
