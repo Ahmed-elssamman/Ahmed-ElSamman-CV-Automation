@@ -357,9 +357,13 @@ Analyzer `2026.09.26.9` excludes teaching-only roles from engineering targets, h
 
 Custom radio/select adapters now verify accessible state, native submitted values, form ownership and validity, including hydration replacement and revalidation after durable intent. Unrelated required controls remain unmapped. Advansys remains disabled: pending candidate declarations, salary semantics and the actual gender proxy value still need resolution. Fixture coverage does not establish live support for that form.
 
+The later read-only Advansys menu audit opened Gender after declining optional cookies through the normal banner. Male/Female option values were observed; no option was selected and the proxy remained empty. This establishes menu semantics only, not the value ultimately submitted. Preserve both the initial obstruction and successful menu observation in `data/browser-audits/20260926T171941Z-advansys-dropdown-05a0daa1/`. No candidate fields were entered, uploads made or application submitted.
+
 Live source evidence: `data/discovery/20260926T171011075065Z/`, `data/job-manager-import.json`. Final batch/report: `data/live-run-job-manager-final.json`, `data/report-job-manager-final.json`. There are 132 jobs: 129 excluded, two blocked on unknowns and one confirmed submission. No second application was submitted. Earlier checkpoints and their different counts remain historical evidence.
 
 The final local suite passed **327 tests** in 96.19 seconds. An independent final-code assessment matched all 132 tracker states. Original PDF hashes, canonical factual evidence, current master CV, the original submitted snapshot manifest, browser receipt hashes, CSV status and exactly one submission-intent/submitted event were rechecked. Evidence: `data/verification-job-manager-custom-controls.json`. The goal remains active; broader current-vacancy coverage, further live form/profile adapters and pending candidate facts remain operational work.
+
+Implementation commit `1b2186538b1bd45af4d6b778ae346446a8013c22` was pushed to private `main`; local and remote heads matched. GitHub CI run `36258592279` independently passed **327 tests** and the tracked-secret audit for all 52 source/documentation files. Receipt: `data/ci-job-manager-custom-controls.json`. A later documentation-only commit records this verification and the read-only menu observation; no further implementation change is implied.
 
 ### Deployment and restart policy
 
