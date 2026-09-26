@@ -90,6 +90,29 @@ def test_required_missing_skill_excludes(profile):
     assert result["missing_required_skills"] == ["Docker"]
 
 
+@pytest.mark.parametrize("preference", ["Master's degree preferred.", "Industry experience is desirable.", "Mentoring experience would be a plus."])
+def test_optional_qualification_does_not_change_following_requirement_scope(profile, preference):
+    job = make_job(description=f"Qualifications\n{preference}\nStrong proficiency in Node.js.\nAngular and HTML.")
+    result = jobs.analyze_job(job)
+    assert "Node.js" in result["required_skills"]
+    assert "Angular" in result["required_skills"]
+    assert jobs.assess_eligibility(job, profile)["status"] == "EXCLUDED"
+
+
+def test_parenthetical_experience_duration_and_preferred_technology_are_distinct(profile):
+    job = make_job(description="Qualifications\nProven experience (5+ years) in leading software teams, preferably in a Node.js environment.")
+    result = jobs.analyze_job(job)
+    assert result["min_years_experience"] == 5
+    assert result["experience_requirements"][0]["skills"] == []
+    assert any("at least 5 years" in reason for reason in jobs.assess_eligibility(job, profile)["reasons"])
+
+
+def test_explicit_preferred_heading_and_skills_heading_reset_scope():
+    result = jobs.analyze_job(make_job(description="Preferred Qualifications:\nDocker\nSkills\nAngular\nNice-to-haves:\nPython"))
+    assert result["required_skills"] == ["Angular"]
+    assert result["preferred_skills"] == ["Docker", "Python"]
+
+
 def test_labelled_employer_experience_does_not_hide_minimum(profile):
     job = make_job(description="Requirements\nAngular required.\nPreferred\nDocker is a plus.\nExperience needed: 5 years.")
     parsed = jobs.analyze_job(job)

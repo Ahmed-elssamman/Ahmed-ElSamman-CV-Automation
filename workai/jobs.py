@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 
-ANALYZER_VERSION = "2026.09.26.9"
+ANALYZER_VERSION = "2026.09.26.10"
 TARGET_COUNTRIES = {"Egypt", "Saudi Arabia", "United Arab Emirates", "Qatar", "Kuwait", "Bahrain", "Oman"}
 COUNTRIES = {
     "Egypt": ("EG", "egypt", "cairo", "giza", "alexandria", "mansoura"),
@@ -326,15 +326,17 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
     alternatives = []
     for line in text.splitlines():
         low = line.lower()
-        heading = low.strip(' "\u201c\u201d\u2018\u2019')
         # A preference inside parentheses qualifies that variant, not the whole requirement.
         clean_line = re.sub(r"\([^)]*(?:preferred|nice.to.have|a plus)[^)]*\)", "", line, flags=re.I)
         # A parenthetical example does not make its brand a mandatory skill.
         clean_line = re.sub(r"\(\s*(?:e\.?g\.?|for example)\s*[,;:]?[^)]*\)", "", clean_line, flags=re.I)
         clean_low = clean_line.lower()
+        heading = clean_low.strip(' "\u201c\u201d\u2018\u2019')
         if len(line) < 100:
-            if not canonical_skills(clean_line) and re.search(r"nice.to.have|preferred|bonus|desirable", clean_low): mode = "preferred"
-            elif re.search(r"^(?:(?:minimum |basic |essential )?(?:requirements|qualifications)|required\s*:?$|what you.?ll need|what you need|who are you|who you are|must[ -]have|what you bring|what we(?: are|['’]re) looking for)", low): mode = "required"
+            # Only a heading changes section scope. A qualification such as
+            # "master's degree preferred" must not make every later skill optional.
+            if re.fullmatch(r"(?:nice[ -]to[ -]haves?(?: skills)?|(?:preferred|desirable)(?: skills| qualifications| requirements| experience)?|bonus(?: skills| qualifications| points)?)\s*:?", heading): mode = "preferred"
+            elif re.search(r"^(?:(?:minimum |basic |essential )?(?:requirements|qualifications)|(?:required|skills|technical skills)\s*:?$|what you.?ll need|what you need|who are you|who you are|must[ -]have|what you bring|what we(?: are|['’]re) looking for)", low): mode = "required"
             elif re.search(r"^(?:responsibilities|what you.?ll do|what will you do|your role|what you.?ll lead|the role entails|(?:the )?job description)", heading): mode = "responsibilities"
             elif re.search(r"benefits|what we offer", low): mode = "benefits"
             elif re.search(r"^about\b|why join|^what .+ offers", low): mode = "general"
@@ -377,6 +379,11 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
         if trailing_years and not optional and not any(item["text"] == line for item in exp_requirements):
             experience.append(line)
             exp_requirements.append({"min": float(trailing_years.group(1)), "max": None, "skills": skills, "text": line})
+        parenthetical_years = re.search(r"\bexperience\s*\(\s*(\d+(?:\.\d+)?)\+?\s*years?\s*\)", line, re.I)
+        if parenthetical_years and not optional and not any(item["text"] == line for item in exp_requirements):
+            experience.append(line)
+            duration_skills = canonical_skills(re.split(r"\bpreferably\b", clean_line, flags=re.I)[0])
+            exp_requirements.append({"min": float(parenthetical_years.group(1)), "max": None, "skills": duration_skills, "text": line})
     technologies = canonical_skills(text + "\n" + str(job.get("position", "")))
     required = sorted(set(required + declared_required))
     preferred = sorted(set(preferred + declared_preferred) - set(required))
@@ -834,6 +841,9 @@ def _source_jobs(source: dict) -> tuple[list[dict], str]:
         payloads, url = _flairstech_jobs(source)
     elif kind == "wp_job_manager":
         from .job_manager import public_jobs
+        payloads, url = public_jobs(source)
+    elif kind == "odoo_careers":
+        from .odoo_jobs import public_jobs
         payloads, url = public_jobs(source)
     elif kind == "manual_session":
         raise PermissionError("MANUAL_SESSION_REQUIRED: authenticated permitted adapter not configured; discovery is not implemented for this platform.")

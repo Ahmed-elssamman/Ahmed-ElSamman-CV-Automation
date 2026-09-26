@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added audited Odoo careers discovery with complete pagination/count checks and title/application identity validation; read all 126 Cyshield cards and retrieved nine target-role pages.
+- Retained explicitly empty vacancy descriptions as missing data without discarding unrelated roles or inventing requirements; recorded Objects' incomplete frontend listing without applying.
+- Fixed optional qualification prose changing later requirements into preferences; recognized parenthetical experience durations and standalone Skills headings.
+
 - Added recurring bounded WP Job Manager searches with complete vacancy descriptions, source identity checks, preserved posting dates and explicit closed-state handling; live discovery added 32 unique jobs.
 - Added audited custom radio/select handling with stable group semantics, native-value and form-ownership checks, hydration support and final pre-submit revalidation.
 - Excluded teaching-only roles from engineering targets; recognized numbered technical-skill requirements, quoted responsibility headings, explicit implementation technologies and offshore work-location restrictions.

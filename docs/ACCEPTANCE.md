@@ -9,8 +9,8 @@
 | OCR | Actual raster PDF → Poppler/Tesseract recognition; unreviewed output rejected; reviewed transcription hashes checked | Passed local fixture |
 | Master LaTeX/PDF | Actual Tectonic compilation, two-page selectable PDF, error/reference/glyph/overflow checks, visual inspection | Passed |
 | Truthful tailoring | Sourced content ranking, unsupported-claim rejection, immutable versions, hash validation | Passed deterministic baseline |
-| Discovery | Sixteen enabled public configurations plus verified direct imports; 132 real target-title listings stored; 38 full vacancies retrieved by recurring WP Job Manager search, including 32 new jobs | Passed for documented sources |
-| Eligibility | Latest assessment: 129 excluded, two blocked on unknown fields, one qualified and submitted | Reasons and unknowns retained |
+| Discovery | Seventeen enabled public configurations plus verified direct imports; 142 real target-title listings stored, including two with explicitly missing descriptions; WP Job Manager and Odoo retrieval verified | Passed for documented sources |
+| Eligibility | Latest assessment: 138 excluded, three blocked on unknown fields, one qualified and submitted | Reasons and unknowns retained |
 | Company research / ATS | Real listing provenance and public website research; explicit employer claims; transparent component scores | Passed baseline |
 | Answers | User-approved notice, legal/country, conditional relocation and net salary facts; sourced education/current-role summaries; explicit numeric experience only | Passed |
 | Optional model analysis | Strict schema, exact quotes, existing fact IDs and unsupported-output rejection | Mock API contract passed; live credentials absent |
@@ -19,7 +19,7 @@
 | Profile completion | Actual local profile-editor fixture: missing known fields only, conflicts retained, save confirmation | Passed local fixture |
 | Connected pipeline | Supplied CV → canonical profile → real job discovery/analysis/research → tailored LaTeX/PDF → known answers → employer form → receipt → exact snapshot → SQLite/CSV | Passed for Total-TECH form |
 | Duplicate/recovery safety | Repeated and concurrent claims, cross-platform missing-location matches, rejected history, crash reconciliation, stale candidate/job revisions and CV tampering | Covered by regressions |
-| Live operation | Production batch: 132 discovered, 129 excluded, two pending unknowns, one confirmed submission; repeats retained exactly one submit event | First real application verified |
+| Live operation | Production state: 142 discovered, 138 excluded, three pending unknowns, one confirmed submission; repeats retained exactly one submit event | First real application verified |
 | GitHub | Requested private repository created under authenticated account; source/data exclusions verified | Passed: private main pushed and verified |
 
 ## Evidence locations (private local data)

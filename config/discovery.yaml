@@ -95,3 +95,10 @@ sources:
     queries: [front, angular, react, full stack, node, nestjs, web developer]
     max_pages: 10
     max_jobs: 150
+  - name: Cyshield public Odoo careers
+    type: odoo_careers
+    url: https://careers.cyshield.com/jobs
+    company: Cyshield
+    company_url: https://cyshield.com/
+    max_pages: 20
+    max_listings: 250
