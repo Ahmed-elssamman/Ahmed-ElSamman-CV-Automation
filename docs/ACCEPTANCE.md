@@ -9,8 +9,8 @@
 | OCR | Actual raster PDF → Poppler/Tesseract recognition; unreviewed output rejected; reviewed transcription hashes checked | Passed local fixture |
 | Master LaTeX/PDF | Actual Tectonic compilation, two-page selectable PDF, error/reference/glyph/overflow checks, visual inspection | Passed |
 | Truthful tailoring | Sourced content ranking, unsupported-claim rejection, immutable versions, hash validation | Passed deterministic baseline |
-| Discovery | Sixteen enabled public configurations plus verified direct imports; 100 real target-title listings stored | Passed for documented sources |
-| Eligibility | Latest assessment: 98 excluded, one blocked on unknown fields, one qualified and submitted | Reasons and unknowns retained |
+| Discovery | Sixteen enabled public configurations plus verified direct imports; 132 real target-title listings stored; 38 full vacancies retrieved by recurring WP Job Manager search, including 32 new jobs | Passed for documented sources |
+| Eligibility | Latest assessment: 129 excluded, two blocked on unknown fields, one qualified and submitted | Reasons and unknowns retained |
 | Company research / ATS | Real listing provenance and public website research; explicit employer claims; transparent component scores | Passed baseline |
 | Answers | User-approved notice, legal/country, conditional relocation and net salary facts; sourced education/current-role summaries; explicit numeric experience only | Passed |
 | Optional model analysis | Strict schema, exact quotes, existing fact IDs and unsupported-output rejection | Mock API contract passed; live credentials absent |
@@ -19,7 +19,7 @@
 | Profile completion | Actual local profile-editor fixture: missing known fields only, conflicts retained, save confirmation | Passed local fixture |
 | Connected pipeline | Supplied CV → canonical profile → real job discovery/analysis/research → tailored LaTeX/PDF → known answers → employer form → receipt → exact snapshot → SQLite/CSV | Passed for Total-TECH form |
 | Duplicate/recovery safety | Repeated and concurrent claims, cross-platform missing-location matches, rejected history, crash reconciliation, stale candidate/job revisions and CV tampering | Covered by regressions |
-| Live operation | Production batch: 100 discovered, 98 excluded, one pending unknowns, one confirmed submission; repeats retained exactly one submit event | First real application verified |
+| Live operation | Production batch: 132 discovered, 129 excluded, two pending unknowns, one confirmed submission; repeats retained exactly one submit event | First real application verified |
 | GitHub | Requested private repository created under authenticated account; source/data exclusions verified | Passed: private main pushed and verified |
 
 ## Evidence locations (private local data)
@@ -60,6 +60,10 @@ The later 100-job batch added six sourced descriptions and recorded 98 exclusion
 Normal unauthenticated Wuzzuf and Bayt search requests returned HTTP 403; Naukrigulf timed out. These sources were recorded and not bypassed. A normal browser inspection of a Bosta Lever QA application revealed custom required questions and hCaptcha integration; the role was unsuitable, no fields were filled and no CV was uploaded. Public feed availability does not prove form support. See `docs/JOB_SOURCES.md` and `docs/PLATFORMS.md`.
 
 ## Verification after the first live receipt
+
+The latest recurring-search/custom-control implementation passed **327 tests** locally in 96.19 seconds, including actual OCR, LaTeX/PDF and Chromium. Live WP Job Manager discovery retrieved 38 full descriptions and added 32 unique jobs. The final production run has **132 jobs: 129 excluded, two blocked on unknowns and the same single confirmed submission**. An independent final-code assessment matched all tracker states. Snapshot/receipt hashes, original source hashes, canonical evidence, master CV and CSV confirmation were rechecked; the live application still has exactly one APPLICATION_STARTED, one SUBMISSION_INTENT and one SUBMITTED event. No second application was sent.
+
+Private evidence: `data/verification-job-manager-custom-controls.json`, `data/live-run-job-manager-final.json`, `data/report-job-manager-final.json`. The two pending workflows are Advansys's junior Angular vacancy and a Total-TECH senior full-stack vacancy lacking explicit experience requirements. Discovery of additional old vacancies does not establish recent recruiter activity. Custom-control tests establish the implemented widget contracts; Advansys's salary semantics, gender proxy value and pending candidate declarations still prevent enabling its live adapter.
 
 The complete local suite passed **266 tests** in 129.52 seconds, including actual OCR, LaTeX/PDF compilation and Chromium fixtures. The source snapshot is commit `35ed5a76896f72317d858809f50d22029681c612`; the tracked-secret audit passed for all 50 tracked files. Local and remote `main` matched and repository visibility was verified PRIVATE.
 

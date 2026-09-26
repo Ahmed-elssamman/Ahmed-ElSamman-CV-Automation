@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 
-ANALYZER_VERSION = "2026.09.26.6"
+ANALYZER_VERSION = "2026.09.26.9"
 TARGET_COUNTRIES = {"Egypt", "Saudi Arabia", "United Arab Emirates", "Qatar", "Kuwait", "Bahrain", "Oman"}
 COUNTRIES = {
     "Egypt": ("EG", "egypt", "cairo", "giza", "alexandria", "mansoura"),
@@ -182,7 +182,21 @@ def _posted(value: Any) -> str | None:
     return str(value) if value else None
 
 
+def _offshore_country(description: str) -> str | None:
+    """Recognize an explicit work location, not a colleague's location or nationality."""
+    for line in description.splitlines():
+        match = re.fullmatch(r"\s*(?:\d+\s*[.)-]\s*)?(?:the )?work (?:will be|is) (?:performed )?offshore from ([\w ]+)\.?\s*", line, re.I)
+        if match:
+            location = match.group(1).strip().casefold()
+            for country, aliases in COUNTRIES.items():
+                if location in {country.casefold(), *(a.casefold() for a in aliases)}:
+                    return country
+    return None
+
+
 def _remote_egypt(location: str, description: str, remote: bool | None, country: str | None) -> bool | None:
+    if offshore := _offshore_country(description):
+        return offshore == "Egypt"
     if remote is False:
         return False
     text = location.lower()
@@ -246,7 +260,7 @@ def parse_job(payload: dict, platform: str = "manual") -> dict:
     if remote is None and isinstance(location, dict) and isinstance(location.get("remote"), bool):
         remote = location["remote"]
     if remote is None:
-        if platform == "remotive" or work_mode in {"remote", "telecommute"} or re.search(r"\bremote\b|home[ -]based", location_text, re.I):
+        if _offshore_country(description) or platform == "remotive" or work_mode in {"remote", "telecommute"} or re.search(r"\bremote\b|home[ -]based", location_text, re.I):
             remote = True
         elif work_mode in {"on-site", "onsite", "hybrid", "on_site"}:
             remote = False
@@ -287,9 +301,11 @@ def parse_job(payload: dict, platform: str = "manual") -> dict:
               "source_url": p.get("_source_url") or p.get("source_url") or job_url,
               "source_kind": p.get("source_kind") or ("employer_published" if platform in {"lever", "greenhouse", "smartrecruiters", "jsonld"} else "job_board"),
               "application_questions": p.get("application_questions", []), "provenance": p.get("provenance", {})}
+    if isinstance(p.get("status"), str) and p["status"].casefold() in {"closed", "expired", "filled", "unpublished"}:
+        result["status"] = p["status"].casefold()
     # Do not retain arbitrary hidden API fields, recruiter metadata or tracking code.
     fields = {"id", "external_id", "company", "position", "description", "job_url", "apply_url", "platform", "country", "city", "location_text", "remote", "work_mode", "remote_from_egypt", "employment_type", "seniority", "required_skills", "preferred_skills", "min_years_experience", "salary_range", "date_discovered", "job_posted_date", "application_deadline", "company_url", "source_url", "source_kind", "application_questions", "provenance", "board", "adapter", "work_authorization_required", "allowed_countries", "required_languages", "visa_sponsorship", "work_permit_support", "relocation_support", "relocation_support_adequate"}
-    return {k: v for k, v in result.items() if k in fields or k == "job_url_kind"}
+    return {k: v for k, v in result.items() if k in fields or k in {"job_url_kind", "status"}}
 
 
 def analyze_job(job: dict, profile: dict | None = None) -> dict:
@@ -299,6 +315,10 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
     declared_preferred = job.get("declared_preferred_skills", job.get("preferred_skills", []) if not previously_analyzed else [])
     declared_minimum = job.get("declared_min_years_experience", job.get("min_years_experience") if not previously_analyzed else None)
     text = plain_text(job.get("description", ""))
+    # Refresh older normalized records when explicit description restrictions
+    # were missed by a previous analyzer. No candidate nationality is inferred.
+    if offshore := _offshore_country(text):
+        result.update({"remote": True, "remote_from_egypt": offshore == "Egypt"})
     required, preferred, responsibilities, education, experience, languages, benefits, qualifications = [], [], [], [], [], [], [], []
     education_required = []
     mode = "general"
@@ -306,6 +326,7 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
     alternatives = []
     for line in text.splitlines():
         low = line.lower()
+        heading = low.strip(' "\u201c\u201d\u2018\u2019')
         # A preference inside parentheses qualifies that variant, not the whole requirement.
         clean_line = re.sub(r"\([^)]*(?:preferred|nice.to.have|a plus)[^)]*\)", "", line, flags=re.I)
         # A parenthetical example does not make its brand a mandatory skill.
@@ -314,12 +335,17 @@ def analyze_job(job: dict, profile: dict | None = None) -> dict:
         if len(line) < 100:
             if not canonical_skills(clean_line) and re.search(r"nice.to.have|preferred|bonus|desirable", clean_low): mode = "preferred"
             elif re.search(r"^(?:(?:minimum |basic |essential )?(?:requirements|qualifications)|required\s*:?$|what you.?ll need|what you need|who are you|who you are|must[ -]have|what you bring|what we(?: are|['’]re) looking for)", low): mode = "required"
-            elif re.search(r"^(?:responsibilities|what you.?ll do|what will you do|your role|what you.?ll lead|the role entails|job description)", low): mode = "responsibilities"
+            elif re.search(r"^(?:responsibilities|what you.?ll do|what will you do|your role|what you.?ll lead|the role entails|(?:the )?job description)", heading): mode = "responsibilities"
             elif re.search(r"benefits|what we offer", low): mode = "benefits"
             elif re.search(r"^about\b|why join|^what .+ offers", low): mode = "general"
         skills = canonical_skills(clean_line)
         optional = mode == "preferred" or bool(re.search(r"preferred|nice.to.have|bonus|is a plus|would be a plus|desirable", clean_low))
-        mandatory = mode == "required" or bool(re.search(r"\b(?:must|required|at least|proficien\w*|experience (?:with|in)|knowledge of|familiar(?:ity)? with|strong (?:understanding|knowledge))\b", clean_low))
+        skill_label = re.match(r"^\s*(?:\d+\s*[.)-]\s*)?(?:tech|technical)\s+skills\s*(?:[:(]|$)", clean_low)
+        # An explicit implementation duty names the technology immediately after
+        # using/in/on. Mentions of colleagues, clients or company tooling do not.
+        duty = re.match(r"^(?:build|develop|implement|maintain)\b.{0,100}?\b(?:using|in|on)\s+(.+)", clean_line, re.I) if mode == "responsibilities" else None
+        implements_stack = bool(duty and any(re.match(r"(?:" + pattern + r")(?![\w])", duty.group(1), re.I) for pattern in SKILLS.values()))
+        mandatory = mode == "required" or bool(skill_label) or implements_stack or bool(re.search(r"\b(?:must|required|at least|proficien\w*|experience (?:with|in)|knowledge of|familiar(?:ity)? with|strong (?:understanding|knowledge))\b", clean_low))
         if optional: preferred.extend(skills)
         elif mandatory:
             required.extend(skills)
@@ -450,8 +476,12 @@ def _language_proficiency_satisfies(proficiency: Any, requirement: str, language
 def assess_eligibility(job: dict, profile: dict) -> dict:
     job = analyze_job(job, profile) if job.get("provenance", {}).get("analysis", {}).get("version") != ANALYZER_VERSION else job
     reasons, unknowns = [], []
+    if str(job.get("status", "")).casefold() in {"closed", "expired", "filled", "unpublished"}:
+        reasons.append("Employer listing is explicitly closed, expired, filled or unpublished.")
     description = job.get("description", "")
     position = job.get("position") or ""
+    if re.search(r"\b(?:instructor|trainer|teacher|teaching|professor|lecturer)\b", position, re.I):
+        reasons.append("Teaching-focused vacancy is outside the configured frontend/full-stack software engineering targets.")
     if not ROLE_PATTERN.search(position): reasons.append("Position is outside frontend/full-stack/software target role families.")
     specific_title = re.search(r"front[ -]?end|full[ -]?stack|angular|react|node\.?js|nestjs|javascript|typescript|\bweb\s+(?:developer|engineer)|\bui\s+(?:developer|engineer)", position, re.I)
     if not specific_title and ROLE_PATTERN.search(position):
@@ -617,12 +647,18 @@ class _PublicRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _fetch(url: str, *, expect_json: bool = True, json_body: dict | None = None) -> Any:
+def _fetch(url: str, *, expect_json: bool = True, json_body: dict | None = None, form_body: dict | None = None) -> Any:
+    if json_body is not None and form_body is not None:
+        raise ValueError("A public request cannot have both JSON and form bodies")
     _public_url(url)
     headers = {"User-Agent": "WorkAI/0.1 (public job discovery; no authentication bypass)", "Accept": "application/json" if expect_json else "text/html"}
     if json_body is not None:
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, headers=headers, data=json.dumps(json_body).encode("utf-8") if json_body is not None else None)
+    if form_body is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    body = (urllib.parse.urlencode(form_body, doseq=True).encode("utf-8") if form_body is not None
+            else json.dumps(json_body).encode("utf-8") if json_body is not None else None)
+    request = urllib.request.Request(url, headers=headers, data=body)
     with urllib.request.build_opener(_PublicRedirect()).open(request, timeout=25) as response:
         content = response.read(12_000_001)
         if len(content) > 12_000_000: raise ValueError("Source response exceeds 12 MB limit.")
@@ -796,6 +832,9 @@ def _source_jobs(source: dict) -> tuple[list[dict], str]:
         payloads, url = _workable_jobs(source)
     elif kind == "flairstech":
         payloads, url = _flairstech_jobs(source)
+    elif kind == "wp_job_manager":
+        from .job_manager import public_jobs
+        payloads, url = public_jobs(source)
     elif kind == "manual_session":
         raise PermissionError("MANUAL_SESSION_REQUIRED: authenticated permitted adapter not configured; discovery is not implemented for this platform.")
     else:

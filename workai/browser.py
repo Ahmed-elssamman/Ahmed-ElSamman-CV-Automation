@@ -186,14 +186,132 @@ def _fill(control, kind: str, value, spec: dict) -> None:
 
 
 def _required_unmapped(page) -> list[dict]:
-    return page.locator('input, select, textarea, [role="combobox"], [role="checkbox"], [role="radio"]').evaluate_all("""els => els.filter(el => {
-      const visible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    return page.locator('input, select, textarea, [role="combobox"], [role="checkbox"], [role="radio"], [role="radiogroup"]').evaluate_all("""els => els.filter(el => {
+      const shown = node => !!node && !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
+      const owner = el.closest('[role="radio"], [role="radiogroup"], [data-input-type="select"]');
+      const visible = shown(el) || (el.type !== 'hidden' && el.getAttribute('aria-hidden') === 'true' && shown(owner));
       return visible && !el.disabled && (el.required || el.getAttribute('aria-required') === 'true') && !el.dataset.workaiMapped;
     }).map(el => ({question: (el.labels && Array.from(el.labels).map(l => l.innerText).join(' ')) || el.getAttribute('aria-label') || el.name || el.id || 'Unlabelled required field', field_type: el.type || el.tagName.toLowerCase()}))""")
 
 
 def _mark(control) -> None:
-    control.evaluate("el => { el.dataset.workaiMapped = 'true'; if (el.type === 'radio' && el.name) { const form = el.form || document; form.querySelectorAll('input[type=radio]').forEach(peer => { if(peer.name === el.name) peer.dataset.workaiMapped = 'true'; }); } }")
+    control.evaluate("el => { el.dataset.workaiMapped = 'true'; if (el.type === 'radio' && el.name && el.checked) { document.querySelectorAll('input[type=radio]').forEach(peer => { if(peer.name === el.name && peer.form === el.form) peer.dataset.workaiMapped = 'true'; }); } }")
+
+
+def _custom_group(page, spec: dict):
+    """Custom controls use an audited group and explicit native-value mappings.
+
+    custom_radio: group, native_name, options[answer] = {locator, value}.
+    The option locator identifies a role=radio wrapper *inside* that group.
+    custom_select: group, control, proxy, native_name, options[answer] =
+    {label, value}. The combobox's live aria-controls identifies its listbox;
+    no generated element ID is persisted in configuration.
+    """
+    if not isinstance(spec.get("group"), dict) or not spec.get("native_name"):
+        raise ValueError("Custom control requires an audited group and native_name")
+    group = _locator(page, spec["group"])
+    if group.count() != 1 or not group.is_visible():
+        raise ValueError("Custom control group is missing, ambiguous or not visible")
+    return group
+
+
+def _custom_radio(page, spec: dict, option: dict, *, fill: bool = False) -> None:
+    group = _custom_group(page, spec)
+    if group.get_attribute("role") != "radiogroup" or not isinstance(option.get("locator"), dict) or "value" not in option:
+        raise ValueError("Custom radio requires a radiogroup and exact wrapper/value mapping")
+    wrapper = _locator(group, option["locator"])
+    if wrapper.count() != 1 or wrapper.get_attribute("role") != "radio" or not wrapper.is_visible():
+        raise ValueError("Custom radio option wrapper is missing, ambiguous or not visible")
+    native = wrapper.locator('input[type="radio"]')
+    if native.count() != 1 or native.get_attribute("name") != spec["native_name"] or native.input_value() != str(option["value"]):
+        raise ValueError("Custom radio native option does not match its audited name/value")
+    if fill:
+        wrapper.click()
+    # Resolve again after click: React hydration may replace inputs and wrappers.
+    group = _custom_group(page, spec)
+    wrapper = _locator(group, option["locator"])
+    if wrapper.count() != 1:
+        raise ValueError("Custom radio option changed during selection")
+    selected = wrapper.locator('input[type="radio"]')
+    if selected.count() != 1 or selected.get_attribute("name") != spec["native_name"] or not selected.is_checked() or selected.input_value() != str(option["value"]):
+        raise ValueError("Custom radio did not preserve the approved native selection")
+    valid = group.evaluate("""(group, expected) => {
+      const form = group.closest('form');
+      if (!form || group.getAttribute('role') !== 'radiogroup') return false;
+      const peers = [...group.querySelectorAll('input[type="radio"]')].filter(el =>
+        el.name === expected.name && el.closest('[role="radiogroup"]') === group);
+      if (!peers.length || peers.filter(el => el.checked).length !== 1) return false;
+      const wrappers = [];
+      for (const native of peers) {
+        const wrapper = native.closest('[role="radio"]');
+        if (native.form !== form || !wrapper || !group.contains(wrapper) || wrapper.closest('form') !== form ||
+            wrapper.querySelectorAll('input[type="radio"]').length !== 1 ||
+            wrapper.getAttribute('aria-checked') !== String(native.checked) ||
+            (native.checked && (native.disabled || native.value !== expected.value || !native.validity.valid))) return false;
+        wrappers.push(wrapper);
+      }
+      // Mark only this verified group and its structurally paired native controls.
+      [group, ...peers, ...wrappers].forEach(el => { el.dataset.workaiMapped = 'true'; });
+      return true;
+    }""", {"name": spec["native_name"], "value": str(option["value"])})
+    if not valid:
+        raise ValueError("Custom radio native values, wrapper states or form ownership disagree")
+
+
+def _custom_select(page, spec: dict, option: dict, *, fill: bool = False) -> None:
+    group = _custom_group(page, spec)
+    if not all(isinstance(spec.get(key), dict) for key in ("control", "proxy")) or not option.get("label") or "value" not in option:
+        raise ValueError("Custom select requires a combobox, proxy and exact label/value mapping")
+    control, proxy = _locator(group, spec["control"]), _locator(group, spec["proxy"])
+    if control.count() != 1 or proxy.count() != 1 or control.get_attribute("role") != "combobox":
+        raise ValueError("Custom select combobox or proxy is missing or ambiguous")
+    if not proxy.evaluate("""(el, name) => el.tagName === 'INPUT' && el.name === name &&
+        el.type !== 'hidden' && el.getAttribute('aria-hidden') === 'true' && el.tabIndex === -1 && !el.disabled""", spec["native_name"]):
+        raise ValueError("Custom select proxy does not match its audited native control")
+    if fill:
+        control.click()
+        listbox_id = control.get_attribute("aria-controls")
+        if not listbox_id or len(listbox_id.split()) != 1:
+            raise ValueError("Custom select lacks a unique live listbox association")
+        # JSON quoting is used inside a CSS attribute string, never a shell command.
+        listbox = page.locator('[id=' + json.dumps(listbox_id) + ']')
+        if listbox.count() != 1 or listbox.get_attribute("role") != "listbox" or control.get_attribute("aria-expanded") != "true":
+            raise ValueError("Custom select did not open its associated listbox")
+        choice = listbox.get_by_role("option", name=str(option["label"]), exact=True)
+        if choice.count() != 1 or choice.get_attribute("aria-disabled") == "true":
+            raise ValueError("Custom select option is missing, ambiguous or disabled")
+        choice.click()
+    # The menu may unmount after selection; the displayed value and native proxy
+    # must agree even when no role=option remains in the DOM.
+    group = _custom_group(page, spec)
+    control, proxy = _locator(group, spec["control"]), _locator(group, spec["proxy"])
+    if control.count() != 1 or proxy.count() != 1:
+        raise ValueError("Custom select controls changed during selection")
+    handles = {"control": control.element_handle(), "proxy": proxy.element_handle(),
+               "name": spec["native_name"], "value": str(option["value"]), "label": str(option["label"])}
+    valid = group.evaluate("""(group, expected) => {
+      const {control, proxy, name, value, label} = expected;
+      const form = group.closest('form');
+      if (!form || !group.contains(control) || !group.contains(proxy) ||
+          control.closest('form') !== form || proxy.form !== form ||
+          control.getAttribute('role') !== 'combobox' || control.disabled ||
+          proxy.tagName !== 'INPUT' || proxy.type === 'hidden' || proxy.name !== name || proxy.disabled ||
+          proxy.getAttribute('aria-hidden') !== 'true' || proxy.tabIndex !== -1 ||
+          [...group.querySelectorAll('input')].filter(el => el.name === name).length !== 1 ||
+          proxy.value !== value || !proxy.validity.valid ||
+          control.getAttribute('aria-expanded') !== 'false' ||
+          ('value' in control ? control.value : control.innerText.trim()) !== label) return false;
+      [control, proxy].forEach(el => { el.dataset.workaiMapped = 'true'; });
+      return true;
+    }""", handles)
+    if not valid:
+        raise ValueError("Custom select display, native proxy or form ownership disagrees with approved answer")
+
+
+def _validate_custom_controls(page, selections: list[tuple]) -> None:
+    for spec, option in selections:
+        handler = _custom_radio if spec["type"] == "custom_radio" else _custom_select
+        handler(page, spec, option)
 
 
 def _positive_confirmation(page, adapter: dict) -> tuple[bool, str | None]:
@@ -280,6 +398,7 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
             if _positive_confirmation(page, adapter)[0]:
                 return _result("SUBMISSION_UNCONFIRMED", reason="Confirmation was already present on initial navigation; reconcile existing application before retry")
             for index, step in enumerate(adapter["steps"]):
+                custom_selections = []
                 if reason := _blocked(page, adapter):
                     return _result("BLOCKED_BY_PLATFORM", reason=reason, questions=questions, answers=answers)
                 if reason := _identity_mismatch(page, adapter):
@@ -308,6 +427,16 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
                             unknowns.append(record["event"])
                         continue
                     value = resolution["answer"]
+                    if kind in {"custom_radio", "custom_select"}:
+                        option = spec.get("options", {}).get(str(value))
+                        if not isinstance(option, dict):
+                            unknowns.append({"type": "UNKNOWN_APPLICATION_FIELD", "question": question,
+                                             "reason": "Approved answer has no exact configured custom option"})
+                            continue
+                        handler = _custom_radio if kind == "custom_radio" else _custom_select
+                        handler(page, spec, option, fill=True)
+                        custom_selections.append((spec, option))
+                        continue
                     if kind == "radio":
                         option_spec = spec.get("options", {}).get(str(value))
                         if not option_spec:
@@ -322,6 +451,7 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
                     _fill(control, kind, value, spec)
                     _mark(control)
                 operation = f"step_{index}_validate_required"
+                _validate_custom_controls(page, custom_selections)
                 for field in _required_unmapped(page):
                     unknowns.append({"type": "UNKNOWN_APPLICATION_FIELD", **field,
                                      "reason": "Required field is outside audited adapter mapping"})
@@ -355,6 +485,10 @@ def apply_job(root: Path, job: dict, profile: dict, cv: dict, *, submit: bool = 
                         before_submit({"job_id": job.get("id"), "questions": questions, "answers": answers, "upload_evidence": upload_evidence})
                     if reason := _blocked(page, adapter) or _identity_mismatch(page, adapter):
                         return _result("FAILED", reason="Final click cancelled after durable intent: " + reason,
+                                       questions=questions, answers=answers, retryable=False)
+                    _validate_custom_controls(page, custom_selections)
+                    if _required_unmapped(page):
+                        return _result("FAILED", reason="Required controls changed before final click",
                                        questions=questions, answers=answers, retryable=False)
                     submitted = True
                     try:

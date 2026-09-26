@@ -87,8 +87,11 @@ sources:
   - {name: Naukrigulf, type: manual_session, enabled: false}
   - {name: Akhtaboot, type: manual_session, enabled: false}
   - {name: Forasna, type: manual_session, enabled: false}
-  - name: Total-TECH junior frontend careers
-    type: jsonld
-    url: https://totaltech.me/job/total-tech-co-cairo-egypt-full-time-junior-frontend-developer/
+  - name: Total-TECH public vacancy search
+    type: wp_job_manager
+    url: https://totaltech.me/all-jobs/
     company: Total-TECH Co.
     company_url: https://totaltech.me/
+    queries: [front, angular, react, full stack, node, nestjs, web developer]
+    max_pages: 10
+    max_jobs: 150

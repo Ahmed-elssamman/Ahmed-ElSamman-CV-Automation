@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added recurring bounded WP Job Manager searches with complete vacancy descriptions, source identity checks, preserved posting dates and explicit closed-state handling; live discovery added 32 unique jobs.
+- Added audited custom radio/select handling with stable group semantics, native-value and form-ownership checks, hydration support and final pre-submit revalidation.
+- Excluded teaching-only roles from engineering targets; recognized numbered technical-skill requirements, quoted responsibility headings, explicit implementation technologies and offshore work-location restrictions.
+
 - Confirmed the first real employer application on Total-TECH's Junior FrontEnd Developer form; preserved receipt evidence and verified repeated runs do not submit again. The listing's 2023 date remains explicit.
 - Added exact vacancy URL/identity checks, original CV upload filenames, and private screenshot/text receipts for confirmed and uncertain browser outcomes.
 - Archived verified receipt copies inside new application snapshots; retained confirmed status through local persistence failures with separate archive events and no duplicate submit event.

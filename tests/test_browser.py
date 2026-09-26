@@ -288,3 +288,236 @@ def test_snapshot_upload_keeps_original_tailored_filename(configured):
     assert result['status'] == 'SUBMITTED', result
     assert result['upload_evidence']['filename'] == 'Fixture_Frontend_Developer_CV.pdf'
     assert 'Fixture_Frontend_Developer_CV.pdf' in result['confirmation_evidence']['marker_text']
+
+
+# Mirrors the audited Workable structure: hidden native inputs inside accessible
+# radio wrappers and a readonly combobox backed by a separate validation proxy.
+# Listbox IDs are generated at runtime and its options live outside the container.
+CUSTOM_CONTROLS = '''
+<style>[data-ui="CA_34103"] [role="radio"] {width:20px;height:20px;border:1px solid;}</style>
+<p id="english-label">English Level</p>
+<fieldset role="radiogroup" data-ui="CA_34103" aria-required="true" aria-labelledby="english-label">
+<label role="presentation"><div role="radio" tabindex="0" aria-required="true" aria-checked="false"
+ aria-labelledby="english-label fair-label" onclick="chooseRadio(this)">
+<input style="display:none" type="radio" name="CA_34103" value="328693" required aria-hidden="true" tabindex="-1"></div><span id="fair-label">Fair</span></label>
+<label role="presentation"><div role="radio" tabindex="-1" aria-required="true" aria-checked="false"
+ aria-labelledby="english-label good-label" onclick="chooseRadio(this)">
+<input style="display:none" type="radio" name="CA_34103" value="328694" required aria-hidden="true" tabindex="-1"></div><span id="good-label">Good</span></label>
+</fieldset>
+<p id="gender-label">Gender</p>
+<div data-ui="CA_34667" data-input-type="select">
+<input role="combobox" aria-labelledby="gender-label" readonly aria-required="true" aria-expanded="false"
+ onclick="this.setAttribute('aria-expanded','true');document.getElementById(this.getAttribute('aria-controls')).hidden=false">
+<input name="CA_34667" required aria-hidden="true" tabindex="-1" style="display:none">
+</div>
+<div role="listbox" hidden><div role="option" onclick="chooseGender(this)">Male</div></div>
+<script>
+function chooseRadio(wrapper) {
+ const group = wrapper.closest('[role="radiogroup"]');
+ for (const peer of group.querySelectorAll('[role="radio"]')) {
+  peer.querySelector('input').checked = peer === wrapper;
+  peer.setAttribute('aria-checked', String(peer === wrapper));
+ }
+}
+function chooseGender(option) {
+ const group = document.querySelector('[data-ui="CA_34667"]');
+ const box = group.querySelector('[role="combobox"]');
+ box.value = 'Male';
+ group.querySelector('[name="CA_34667"]').value = 'fixture-male';
+ box.setAttribute('aria-expanded', 'false');
+ option.closest('[role="listbox"]').hidden = true;
+}
+for (const el of document.querySelectorAll('[data-ui="CA_34103"] input, [data-ui="CA_34103"] [role="radio"], [role="listbox"]')) {
+ el.id = 'hydrated-' + crypto.randomUUID();
+}
+document.querySelector('[role="combobox"]').setAttribute('aria-controls', document.querySelector('[role="listbox"]').id);
+</script>
+'''
+
+
+@pytest.fixture
+def custom_configured(configured):
+    root, job, profile, cv, adapter, state = configured
+    state['html'] = HTML.replace('<button>Submit application', CUSTOM_CONTROLS + '<button>Submit application')
+    add_answer(root, 'English Level', 'Good', source='fixture-only', scope={'company': 'Fixture'})
+    add_answer(root, 'Gender', 'Male', source='fixture-only', scope={'company': 'Fixture'})
+    adapter['steps'][-1]['fields'] += [
+        {'question': 'English Level', 'type': 'custom_radio',
+         'group': {'selector': 'fieldset[role="radiogroup"][data-ui="CA_34103"]'},
+         'native_name': 'CA_34103',
+         'options': {'Good': {'locator': {'role': 'radio', 'name': 'English Level Good'}, 'value': '328694'}}},
+        {'question': 'Gender', 'type': 'custom_select', 'group': {'selector': '[data-ui="CA_34667"]'},
+         'control': {'role': 'combobox', 'name': 'Gender'}, 'proxy': {'selector': 'input[name="CA_34667"]'},
+         'native_name': 'CA_34667', 'options': {'Male': {'label': 'Male', 'value': 'fixture-male'}}},
+    ]
+    _write_adapter(root, adapter)
+    return configured
+
+
+def test_audited_custom_radios_and_portal_dropdown_submit_with_native_controls(custom_configured):
+    root, job, profile, cv, adapter, state = custom_configured
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'SUBMITTED', result
+    assert state['submissions'] == 1
+    assert [answer['answer'] for answer in result['answers'][-2:]] == ['Good', 'Male']
+
+
+@pytest.mark.parametrize('fragment', [
+    '<div role="radio" aria-required="true" aria-label="Unknown wrapper" tabindex="0">Unknown</div>',
+    '<div data-input-type="select"><input required name="unknown-proxy" aria-hidden="true" tabindex="-1" style="display:none"></div>',
+])
+def test_unrelated_required_wrappers_and_hidden_proxies_remain_unknown(custom_configured, fragment):
+    root, job, profile, cv, adapter, state = custom_configured
+    # Give the second hidden-proxy owner a visible box, as in the audited widget.
+    fragment = fragment.replace('data-input-type="select"', 'data-input-type="select" style="height:20px"')
+    state['html'] = state['html'].replace('<button>Submit application', fragment + '<button>Submit application')
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'BLOCKED_UNKNOWN_FIELDS', result
+    assert state['submissions'] == 0
+
+
+@pytest.mark.parametrize('mutation', [
+    "wrapper.querySelector('input').checked = false;",
+    "wrapper.setAttribute('aria-checked', 'false');",
+    "wrapper.querySelector('input').value = 'changed';",
+    "wrapper.querySelector('input').name = 'different';",
+    "wrapper.querySelector('input').setAttribute('form', 'unrelated');",
+])
+def test_custom_radio_native_and_wrapper_must_agree(custom_configured, mutation):
+    root, job, profile, cv, adapter, state = custom_configured
+    state['html'] = state['html'].replace("\n}\nfunction chooseGender", '\n' + mutation + '\n}\nfunction chooseGender')
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'FAILED', result
+    assert 'Custom radio' in result['failure_reason']
+    assert state['submissions'] == 0
+
+
+@pytest.mark.parametrize('mutation', [
+    "group.querySelector('[name=\"CA_34667\"]').value = 'changed';",
+    "group.querySelector('[name=\"CA_34667\"]').remove();",
+    "group.querySelector('[name=\"CA_34667\"]').name = 'different';",
+    "group.querySelector('[name=\"CA_34667\"]').setAttribute('form', 'unrelated');",
+    "box.value = 'Other';",
+    "box.setAttribute('aria-expanded', 'true');",
+])
+def test_custom_select_rejects_missing_wrong_proxy_and_display(custom_configured, mutation):
+    root, job, profile, cv, adapter, state = custom_configured
+    state['html'] = state['html'].replace("option.closest('[role=\"listbox\"]').hidden = true;", "option.closest('[role=\"listbox\"]').hidden = true;" + mutation)
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'FAILED', result
+    assert 'Custom select' in result['failure_reason']
+    assert state['submissions'] == 0
+
+
+@pytest.mark.parametrize('field_type', ['custom_radio', 'custom_select'])
+def test_custom_control_without_exact_approved_option_blocks(custom_configured, field_type):
+    root, job, profile, cv, adapter, state = custom_configured
+    for field in adapter['steps'][-1]['fields']:
+        if field.get('type') == field_type:
+            field['options'] = {}
+    _write_adapter(root, adapter)
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'BLOCKED_UNKNOWN_FIELDS', result
+    assert state['submissions'] == 0
+
+
+@pytest.mark.parametrize('selector, mutation', [
+    ('[name="CA_34103"][value="328694"]', "el.checked=false;"),
+    ('[name="CA_34667"]', "el.value='changed';"),
+])
+def test_custom_values_are_rechecked_after_later_fields(custom_configured, selector, mutation):
+    root, job, profile, cv, adapter, state = custom_configured
+    state['html'] = state['html'].replace('<button>Submit application', '<label>Fixture trigger<input id="trigger"></label><button>Submit application')
+    state['html'] = state['html'].replace('</body>', '<script>document.getElementById("trigger").oninput=()=>{const el=document.querySelector(' + json.dumps(selector) + ');' + mutation + '};</script></body>')
+    adapter['steps'][-1]['fields'].append({'question': 'Full name', 'selector': '#trigger'})
+    _write_adapter(root, adapter)
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'FAILED', result
+    assert state['submissions'] == 0
+
+
+def test_other_form_same_radio_name_is_never_marked(custom_configured):
+    root, job, profile, cv, adapter, state = custom_configured
+    foreign = '<form id="foreign" hidden><label>Other form required<input type="radio" name="CA_34103" value="328694" required></label></form>'
+    state['html'] = state['html'].replace('</body>', foreign + '</body>')
+    state['html'] = state['html'].replace("document.getElementById('two').hidden=false", "document.getElementById('two').hidden=false;document.getElementById('foreign').hidden=false")
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'BLOCKED_UNKNOWN_FIELDS', result
+    assert any('Other form required' in item['question'] for item in result['unknown_events'])
+    assert any(item['question'] == 'English Level' for item in result['answers'])
+    assert state['submissions'] == 0
+
+
+def test_native_formless_radio_does_not_mark_same_name_inside_other_form(configured):
+    root, job, profile, cv, adapter, state = configured
+    state['html'] = '''<label>Standalone no<input type="radio" name="sponsor" required></label>
+<form><label>Other form required<input type="radio" name="sponsor" required></label><button>Submit application</button></form>
+<p data-testid="application-confirmation" hidden>Application received</p>'''
+    adapter['steps'] = [{'fields': [{'question': 'Do you require sponsorship', 'type': 'radio', 'options': {'False': {'label': 'Standalone no'}}}],
+                         'submit': {'role': 'button', 'name': 'Submit application'}}]
+    _write_adapter(root, adapter)
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'BLOCKED_UNKNOWN_FIELDS', result
+    assert any('Other form required' in item['question'] for item in result['unknown_events'])
+    assert state['submissions'] == 0
+
+
+def test_nested_unrelated_radio_group_with_same_name_remains_unmapped(custom_configured):
+    root, job, profile, cv, adapter, state = custom_configured
+    nested = '''<fieldset role="radiogroup"><div role="radio" aria-required="true" aria-checked="false" aria-label="Unrelated nested question">
+<input type="radio" name="CA_34103" value="unrelated" required aria-hidden="true" tabindex="-1" style="display:none"></div></fieldset>'''
+    state['html'] = state['html'].replace('</fieldset>', nested + '</fieldset>')
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'BLOCKED_UNKNOWN_FIELDS', result
+    assert any(item['question'] == 'Unrelated nested question' for item in result['unknown_events'])
+    assert state['submissions'] == 0
+
+
+@pytest.mark.parametrize('kind', ['radio', 'select'])
+def test_custom_hydrated_replacement_uses_stable_group_and_option_semantics(custom_configured, kind):
+    root, job, profile, cv, adapter, state = custom_configured
+    replace_group = "const replacement=group.cloneNode(true);for(const el of replacement.querySelectorAll('input[id], [role=\"radio\"][id]'))el.id='new-'+crypto.randomUUID();group.replaceWith(replacement);"
+    if kind == 'radio':
+        state['html'] = state['html'].replace('\n}\nfunction chooseGender', '\n' + replace_group + '\n}\nfunction chooseGender')
+    else:
+        state['html'] = state['html'].replace("option.closest('[role=\"listbox\"]').hidden = true;", "option.closest('[role=\"listbox\"]').hidden = true;" + replace_group)
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == 'SUBMITTED', result
+    assert state['submissions'] == 1
+
+
+@pytest.mark.parametrize('proxy_change', ['missing', 'wrong_selector', 'invalid', 'duplicate'])
+def test_custom_select_proxy_contract_is_enforced(custom_configured, proxy_change):
+    root, job, profile, cv, adapter, state = custom_configured
+    field = adapter['steps'][-1]['fields'][-1]
+    if proxy_change == 'missing':
+        field.pop('proxy')
+    elif proxy_change == 'wrong_selector':
+        field['proxy'] = {'role': 'combobox', 'name': 'Gender'}
+    elif proxy_change == 'invalid':
+        state['html'] = state['html'].replace('name="CA_34667" required', 'name="CA_34667" pattern="[0-9]+" required')
+    else:
+        state['html'] = state['html'].replace('<div role="listbox" hidden>', '<input name="CA_34667" form="two" required aria-hidden="true" tabindex="-1"><div role="listbox" hidden>')
+        # An unrelated same-name proxy outside the mapped container stays unmapped.
+    _write_adapter(root, adapter)
+    result = apply_job(root, job, profile, cv, submit=True)
+    assert result['status'] == ('BLOCKED_UNKNOWN_FIELDS' if proxy_change == 'duplicate' else 'FAILED'), result
+    assert state['submissions'] == 0
+
+
+def test_custom_values_rechecked_after_durable_intent(custom_configured, monkeypatch):
+    import workai.browser as browser_module
+    root, job, profile, cv, adapter, state = custom_configured
+    original = browser_module._identity_mismatch
+    durable = []
+    def change_after_intent(page, adapter):
+        if durable:
+            page.locator('[name="CA_34667"]').evaluate("el => el.value = 'changed'")
+        return original(page, adapter)
+    monkeypatch.setattr(browser_module, '_identity_mismatch', change_after_intent)
+    result = apply_job(root, job, profile, cv, submit=True, before_submit=durable.append)
+    assert durable
+    assert result['status'] == 'FAILED', result
+    assert 'Custom select' in result['failure_reason']
+    assert result['retryable'] is False
+    assert state['submissions'] == 0
